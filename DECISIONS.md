@@ -71,3 +71,14 @@ The entries below were seeded from the approved design before implementation sta
 - **Decision:** Each correctness property gets its own test file (for example `sim/tests/test_grid_fill.py`, `sim/tests/test_sched_soc.py`), instead of the grouping in the design's testing table.
 - **Rationale:** Separate files let independent property tests be written in parallel without edit conflicts. Each test still carries the `# Feature: headroom, Property N: <title>` comment, so the mapping to the design stays traceable.
 - **Affected component:** `sim/tests/`, `web/src/**/*.test.ts`.
+### 2026-10-27 14:52 MT: Tag CDK-internal raw resources with `Project=headroom`
+
+- **Decision:** Keep `cdk.Tags.of(app).add('Project', 'headroom')` and add a stack Aspect (`TagRawCfnResources` in `infra/lib/site-stack.ts`) that sets `Tags` by property override on raw `CfnResource` nodes of type `AWS::IAM::Role` and `AWS::Lambda::Function` that are not taggable through `TagManager`.
+- **Rationale:** `autoDeleteObjects` creates its provider role and handler as raw `CfnResource`s, which `Tags.of()` does not reach, so the synthesized template had two taggable resources without the tag (Requirement 1.10). No `aws-cdk-lib` API name differed from the design, so this adds behaviour rather than substituting an API. The remaining untagged resources (bucket policy, OAC, Lambda layer, IAM policy, custom resources, CDK metadata) do not support tags in CloudFormation.
+- **Affected component:** `infra/lib/site-stack.ts`, `infra/bin/headroom.ts`.
+
+### 2026-10-27 14:52 MT: Infra uses TypeScript 5.9.3 with ts-node
+
+- **Decision:** Pin `typescript` 5.9.3 and `ts-node` 10.9.2 in `infra/`, with `cdk.json` running `npx ts-node --prefer-ts-exts bin/headroom.ts`. `web/` keeps its own TypeScript 7.0.2 pin.
+- **Rationale:** ts-node depends on the TypeScript compiler's JavaScript API, which the TypeScript 7 native port does not provide in the same form. The standard CDK app setup on TypeScript 5.x synthesizes without a build step. The two packages have separate lockfiles, so different compiler versions do not conflict.
+- **Affected component:** `infra/package.json`, `infra/cdk.json`.
