@@ -1,0 +1,73 @@
+# Decisions
+
+This file logs every judgment call made while building Headroom (Requirement 25.4). Add a new entry in the same commit as the change it describes. Append new entries at the end; do not rewrite old ones. If a later decision reverses an earlier one, add a new entry that names the entry it replaces.
+
+## Entry template
+
+```markdown
+### YYYY-MM-DD HH:MM MT: <short title>
+
+- **Decision:** what was chosen.
+- **Rationale:** why, including the alternatives considered.
+- **Affected component:** file, module or system part (for example `sim/scheduler.py`).
+```
+
+Times are America/Denver local time (MT).
+
+## Entries
+
+The entries below were seeded from the approved design before implementation started.
+
+### 2026-10-27 12:28 MT: Extra modules `timeutil.py`, `grid.py` and `contract.py`
+
+- **Decision:** Add `sim/timeutil.py` (UTC/Denver helpers, ISO `Z` formatting, slot math), `sim/grid.py` (cache to hourly series, gap fill, windows, slots, stress flags, DR start) and `sim/contract.py` (build, validate, serialize and atomically write Scenario files) to the module layout in the brief.
+- **Rationale:** These keep `run_scenarios.py` a thin orchestrator and give the property tests small pure functions to target. Putting this logic inside `run_scenarios.py` would make it hard to test without building a whole scenario.
+- **Affected component:** `sim/` package layout.
+
+### 2026-10-27 12:28 MT: EIA-930 hour labelling interpretation
+
+- **Decision:** Parse each EIA `period` (`YYYY-MM-DDTHH`) as a UTC timestamp for the hour that starts at that time, and assign its value unchanged to the four 15-minute slots starting at :00, :15, :30 and :45 of that hour (Requirements 7.10, 7.12).
+- **Rationale:** Some EIA-930 views use hour-ending labels, so the true hour may be one hour earlier than the label. The requirements fix the hour-starting interpretation. If the data is hour-ending, every series and both selected windows sit one hour late. That shift does not change the policy comparison or any conclusion of the demo.
+- **Affected component:** `sim/timeutil.py` (`parse_eia_period`), `sim/grid.py` (`expand_to_slots`, `build_slots`).
+
+### 2026-10-27 12:28 MT: `GEO` mapped to Other
+
+- **Decision:** Map any fuel code outside Known_Fuel_Codes (`COL`, `NG`, `NUC`, `OIL`, `OTH`, `SUN`, `WAT`, `WND`) to Other at 300 gCO₂eq/kWh. This includes `GEO`, which is not mapped to Geothermal (38 gCO₂eq/kWh). Each distinct unknown code and respondent is logged with its row count.
+- **Rationale:** This follows the approved Requirement 8.2. It overstates the intensity of any geothermal generation, which is small in PACE, BPAT and CISO hourly mixes. Mapping `GEO` to Geothermal is a candidate refinement if the requirement is revised.
+- **Affected component:** `sim/carbon.py` (`map_fuel`), `sim/config.py` (`FUEL_CODE_MAP`).
+
+### 2026-10-27 12:28 MT: `plan_deadline` clamping and carry-over deadline accounting
+
+- **Decision:** The headroom policy plans each job against `plan_deadline = min(deadline_min, N × 15)`, so it never pushes work past the end of the 48-hour window. A job that cannot finish inside the window even when run continuously from arrival is always at risk and runs exactly like baseline (`GRID_NOW` every slot). For deadline accounting, a job completed in the window is met iff `finish_min ≤ deadline_min`. A job unfinished at the window end is met iff `N × 15 + remaining_min ≤ deadline_min`, projecting that it keeps running after the window (carry-over).
+- **Rationale:** Nominal deadlines often fall after the window. Without clamping, the headroom policy could defer work out of the window, which would make its $ and CO₂ numbers look better than they are. The carry-over rule gives baseline 100% deadlines met (Requirement 18.7), because baseline jobs always run continuously from arrival.
+- **Affected component:** `sim/scheduler.py` (headroom routing, job outcomes), `sim/metrics.py` (`deadlines_met_pct`).
+
+### 2026-10-27 12:28 MT: "Highest Site_Grid_Draw already planned" read as `P`
+
+- **Decision:** Requirement 11.14's "highest Site_Grid_Draw already planned" is the running planned peak `P`. `P` starts at the site's average facility load, `P0 = PUE × (mean(inference IT kW) + IT_PEAK_KW × TRAINING_SHARE)`, and after each slot becomes `max(P, grid_draw[s])`.
+- **Rationale:** Starting from zero would let the first slots set an arbitrarily low or high peak and make peak shaving depend on start-up order. `P0` is a fixed, explainable target, and anything already committed raises it. `P0` is the first tuning knob if the stress-hour peak test (Requirement 23.6) fails.
+- **Affected component:** `sim/scheduler.py` (headroom policy, storage dispatch).
+
+### 2026-10-27 12:28 MT: `dr_delivered_pct` clamped, raw value kept in `meta.params`
+
+- **Decision:** Report `metrics.dr_delivered_pct = clamp(100 × (base.grid[dr_start] − max(head.grid[dr_slots])) / 4000, 0, 100)`, rounded to 1 dp, and store the unclamped value in `meta.params.dr_delivered_raw_pct`.
+- **Rationale:** The value can exceed 100% when the headroom load already sits below the cap, but the output contract bounds every `_pct` field to [0, 100] (Requirement 16.10). Keeping the raw value means nothing is hidden. Other KPIs (`headroom_kw`, `usd_saved`, `co2_avoided_t`) are reported raw, including negatives (Requirement 15.7).
+- **Affected component:** `sim/metrics.py`, `sim/contract.py` (`build_doc`, `validate`).
+
+### 2026-10-27 12:28 MT: Stress slots fall in whole hours
+
+- **Decision:** With `k = ceil(0.05 × N)` (10 for N = 192), the threshold is the k-th largest `pace_demand_mw`, and a slot is a Stress_Slot iff its demand is at or above the threshold. Ties are included, so the count can exceed k.
+- **Rationale:** Each hourly EIA value repeats across four slots, so any threshold selects whole hours. A real scenario typically gets 12 stress slots (3 hours), not exactly 10. Breaking ties by slot index would split an hour arbitrarily. The inclusive rule is deterministic and matches the glossary's "top 5% of PACE demand values".
+- **Affected component:** `sim/grid.py` (`stress_flags`), `sim/metrics.py` (`headroom_kw`).
+
+### 2026-10-27 12:28 MT: `random.Random` chosen over numpy for seeded randomness
+
+- **Decision:** Use stdlib `random.Random` (Mersenne Twister) for all simulated randomness, with one generator per purpose seeded by `rng_for(seed, scenario, purpose)` from the first 8 bytes of `sha256(f"{seed}:{scenario}:{purpose}")`.
+- **Rationale:** Its seeded stream is stable across Python versions and adds no dependency risk, which supports byte-identical Scenario files for the same seed and cache. Per-purpose seeds keep job generation and idle capacity independent, so changing one does not shift the other. numpy is still used for array arithmetic in the scheduler.
+- **Affected component:** `sim/jobs.py` (`rng_for`, `generate`), `sim/site.py` (`idle_capacity_kw`).
+
+### 2026-10-27 12:28 MT: One test file per correctness property
+
+- **Decision:** Each correctness property gets its own test file (for example `sim/tests/test_grid_fill.py`, `sim/tests/test_sched_soc.py`), instead of the grouping in the design's testing table.
+- **Rationale:** Separate files let independent property tests be written in parallel without edit conflicts. Each test still carries the `# Feature: headroom, Property N: <title>` comment, so the mapping to the design stays traceable.
+- **Affected component:** `sim/tests/`, `web/src/**/*.test.ts`.
