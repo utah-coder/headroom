@@ -28,16 +28,26 @@ Shared job mechanics (design, "Shared job mechanics"):
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from sim.config import BATTERY, FLYWHEEL, PUE, RESTART_PENALTY_MIN, SLOT_MINUTES
+from sim.config import (
+    ALT_REGIONS,
+    BATTERY,
+    FLYWHEEL,
+    MOVE_DELAY_SLOTS,
+    MOVE_PENALTY_USD,
+    PUE,
+    RESTART_PENALTY_MIN,
+    SLOT_MINUTES,
+)
 from sim.grid import GridSlot
 from sim.jobs import TrainingJob
 from sim.site import StorageSpec
-from sim.timeutil import hhmm_denver
+from sim.timeutil import hhmm_denver, iso_z
 
 __all__ = [
     "Route",
@@ -61,9 +71,16 @@ __all__ = [
     "it_kwh",
     "window_minutes",
     "met_deadline",
+    "late_minutes",
     "job_outcome",
     "outcomes",
     "flag_late",
+    "REASON_MAX_CHARS",
+    "ordinal",
+    "demand_percentile",
+    "decision_target",
+    "late_suffix",
+    "reason_string",
     "run",
     "run_baseline",
     "run_headroom",
@@ -253,6 +270,7 @@ class JobOutcome:
     completed_in_window: bool
     met_deadline: bool
     late: bool
+    late_min: int = 0           # minutes past the deadline (with carry-over); 0 when met
 
 
 @dataclass(frozen=True)
@@ -297,13 +315,22 @@ def window_minutes(n_slots: int) -> int:
     return n_slots * SLOT_MINUTES
 
 
+def _expected_finish_min(js: JobState, n_slots: int) -> int:
+    """Finish time in minutes from window start, carrying unfinished work past the window."""
+    if js.finish_min is not None:
+        return js.finish_min
+    carry = js.remaining_min + (RESTART_PENALTY_MIN if js.paused else 0)
+    return window_minutes(n_slots) + carry
+
+
 def met_deadline(js: JobState, n_slots: int) -> bool:
     """Deadline accounting with carry-over (Requirement 10.20, DECISIONS.md)."""
-    deadline = js.job.deadline_min
-    if js.finish_min is not None:
-        return js.finish_min <= deadline
-    carry = js.remaining_min + (RESTART_PENALTY_MIN if js.paused else 0)
-    return window_minutes(n_slots) + carry <= deadline
+    return _expected_finish_min(js, n_slots) <= js.job.deadline_min
+
+
+def late_minutes(js: JobState, n_slots: int) -> int:
+    """Minutes past the deadline (0 when the deadline is met), with carry-over."""
+    return max(0, _expected_finish_min(js, n_slots) - js.job.deadline_min)
 
 
 def job_outcome(js: JobState, n_slots: int) -> JobOutcome:
@@ -316,6 +343,7 @@ def job_outcome(js: JobState, n_slots: int) -> JobOutcome:
         completed_in_window=js.finish_min is not None,
         met_deadline=met,
         late=not met,
+        late_min=late_minutes(js, n_slots),
     )
 
 
@@ -325,15 +353,20 @@ def outcomes(states: Iterable[JobState], n_slots: int) -> dict[str, JobOutcome]:
 
 def flag_late(decisions: Sequence[Decision],
               job_outcomes: Mapping[str, JobOutcome]) -> list[Decision]:
-    """Mark the last Decision of every late job with ``late=True`` (Requirement 11.12)."""
+    """Mark the last Decision of every late job (Requirement 11.12).
+
+    The Decision gets ``late=True`` and its reason gets `` [LATE +N min]``
+    (N = ``JobOutcome.late_min``, at least 1 for a late job).
+    """
     last: dict[str, int] = {}
     for i, d in enumerate(decisions):
         last[d.job] = i
     out = list(decisions)
     for job_id, i in last.items():
         o = job_outcomes.get(job_id)
-        if o is not None and o.late:
-            out[i] = dataclasses.replace(out[i], late=True)
+        if o is not None and o.late and not out[i].late:
+            reason = _checked_len(out[i].reason + late_suffix(max(1, o.late_min)))
+            out[i] = dataclasses.replace(out[i], late=True, reason=reason)
     return out
 
 
@@ -346,9 +379,141 @@ def _initial_soc_pct() -> tuple[float, float]:
 _IDLE = StorageFlows(charge_kw=0.0, discharge_kw=0.0)
 
 
-def _interim_reason(t: datetime, job_id: str, route: str) -> str:
-    # Placeholder until the full Reason_String helpers land (task 8.2).
-    return f"{hhmm_denver(t)} job#{job_id} → {route}"
+# --- Reason strings (design, "Decisions and reason strings") ----------------
+
+REASON_MAX_CHARS = 200   # Requirement 13.9
+
+
+def ordinal(n: int) -> str:
+    """English ordinal: 1st 2nd 3rd 4th … 11th 12th 13th … 21st 22nd … 101st."""
+    if n < 0:
+        raise ValueError(f"ordinal needs a non-negative integer: {n}")
+    if n % 100 in (11, 12, 13):
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def demand_percentile(demand: Sequence[float], i: int) -> int:
+    """PACE demand percentile of slot ``i`` (Requirement 13.4).
+
+    ``max(1, floor(100 × #(d ≤ d_i) / N))`` over all N slots of the scenario,
+    so the result is an integer from 1 to 100.
+    """
+    n = len(demand)
+    if not 0 <= i < n:
+        raise IndexError(f"slot {i} outside [0, {n})")
+    d_i = demand[i]
+    count = sum(1 for d in demand if d <= d_i)
+    return max(1, 100 * count // n)
+
+
+def _round_half_up(x: float) -> int:
+    return math.floor(x + 0.5)
+
+
+def _move_delay_min() -> int:
+    return MOVE_DELAY_SLOTS * SLOT_MINUTES
+
+
+def decision_target(route: str, defer_to: datetime | None = None,
+                    move_region: str | None = None) -> str | None:
+    """``Decision.target`` for a route: ISO ``Z`` resume slot for DEFER, region
+    for MOVE_REGION, else ``None`` (Requirement 13.8). Pass the same values
+    given to ``reason_string`` so the two agree."""
+    if route == DEFER:
+        if defer_to is None:
+            raise ValueError("DEFER needs a resume slot time")
+        return iso_z(defer_to)
+    if route == MOVE_REGION:
+        if move_region is None:
+            raise ValueError("MOVE_REGION needs a target region")
+        return move_region
+    return None
+
+
+def late_suffix(late_min: int) -> str:
+    """`` [LATE +N min]`` for a job that misses its deadline by ``late_min`` (Requirement 11.12)."""
+    if late_min <= 0:
+        raise ValueError(f"late minutes must be positive: {late_min}")
+    return f" [LATE +{late_min} min]"
+
+
+def _checked_len(reason: str) -> str:
+    if len(reason) > REASON_MAX_CHARS:
+        raise ValueError(f"reason string is {len(reason)} characters "
+                         f"(max {REASON_MAX_CHARS}): {reason!r}")
+    return reason
+
+
+def reason_string(
+    t: datetime,
+    job_id: str,
+    route: str,
+    *,
+    demand_pct: int,
+    carbon_g_per_kwh: float,
+    peak_delta_kw: float,
+    defer_to: datetime | None = None,
+    move_region: str | None = None,
+    move_carbon_g_per_kwh: float | None = None,
+    dr_cap_kw: float | None = None,
+    late_min: int | None = None,
+) -> str:
+    """Build a Decision's Reason_String (Requirements 12.8, 13.3–13.6, 13.9).
+
+    Format::
+
+        {HH:MM} job#{id} → {ROUTE}[ to {target}] — PACE demand {pct} pct,
+        {ci} g/kWh, would raise monthly peak by {dk} kW[ — DR event, cap {cap:,} kW]
+        [ [LATE +N min]]
+
+    * ``t``: slot start, shown as America/Denver ``HH:MM``.
+    * ``defer_to``: resume slot start for ``DEFER`` (shown as Denver ``HH:MM``).
+    * ``move_region`` / ``move_carbon_g_per_kwh``: target Alternate_Region and
+      its carbon intensity for the start hour; ``MOVE_REGION`` uses the compact
+      form ``to BPAT ($75, +30 min, 92 g/kWh)``.
+    * ``demand_pct``: from ``demand_percentile`` (1–100).
+    * ``carbon_g_per_kwh``: PACE intensity, rounded to the nearest integer.
+    * ``peak_delta_kw``: kW by which running the job on the grid now would raise
+      the planned peak; rounded and clamped to a non-negative integer.
+    * ``dr_cap_kw``: set when the route changed because of the DR_Event.
+    * ``late_min``: set (> 0) when the job misses its deadline.
+    """
+    if not 1 <= demand_pct <= 100:
+        raise ValueError(f"demand percentile must be 1–100: {demand_pct}")
+    if route not in ROUTE_ORDER:
+        raise ValueError(f"unknown route: {route!r}")
+    if route == DEFER:
+        if defer_to is None:
+            raise ValueError("DEFER needs a resume slot time")
+        target = f" to {hhmm_denver(defer_to)}"
+    elif route == MOVE_REGION:
+        if move_region not in ALT_REGIONS:
+            raise ValueError(f"MOVE_REGION target must be one of {ALT_REGIONS}: {move_region!r}")
+        if move_carbon_g_per_kwh is None:
+            raise ValueError("MOVE_REGION needs the target region's carbon intensity")
+        target = (f" to {move_region} (${MOVE_PENALTY_USD:,.0f}, +{_move_delay_min()} min, "
+                  f"{_round_half_up(move_carbon_g_per_kwh)} g/kWh)")
+    else:
+        target = ""
+    if route != DEFER and defer_to is not None:
+        raise ValueError(f"{route} takes no DEFER target")
+    if route != MOVE_REGION and (move_region is not None or move_carbon_g_per_kwh is not None):
+        raise ValueError(f"{route} takes no MOVE_REGION target")
+
+    dk = max(0, _round_half_up(peak_delta_kw))
+    reason = (
+        f"{hhmm_denver(t)} job#{job_id} → {route}{target}"
+        f" — PACE demand {ordinal(demand_pct)} pct, {_round_half_up(carbon_g_per_kwh)} g/kWh,"
+        f" would raise monthly peak by {dk} kW"
+    )
+    if dr_cap_kw is not None:
+        reason += f" — DR event, cap {_round_half_up(dr_cap_kw):,} kW"
+    if late_min is not None:
+        reason += late_suffix(late_min)
+    return _checked_len(reason)
 
 
 # --- Policies ----------------------------------------------------------------
@@ -367,6 +532,8 @@ def run_baseline(inp: ScenarioInputs) -> PolicyResult:
 
     No pauses, deferral or moves; Battery and Flywheel stay idle at their
     initial SOC; each job gets one ``GRID_NOW`` Decision at its arrival slot.
+    Its reason's peak change is the kW by which that job lifts the slot's grid
+    draw above the highest grid draw of earlier slots.
     """
     n = inp.n_slots
     states = [JobState.new(j, n) for j in inp.jobs]
@@ -374,23 +541,43 @@ def run_baseline(inp: ScenarioInputs) -> PolicyResult:
     bat_soc, fly_soc = _initial_soc_pct()
     out_slots: list[SlotResult] = []
     decisions: list[Decision] = []
+    demand = [slot.pace_demand_mw for slot in inp.slots]
+    peak_so_far = 0.0   # highest grid draw in earlier slots
 
     for s, slot in enumerate(inp.slots):
         training_it = 0.0
+        arrivals: list[tuple[JobState, float]] = []   # (job, facility kW this slot)
         for js in states:
             if not js.runnable(s):
                 continue
-            if js.prev_route is None:
-                decisions.append(Decision(
-                    t=slot.t, job=js.job.id, route=GRID_NOW, target=None,
-                    reason=_interim_reason(slot.t, js.job.id, GRID_NOW), cause="COST",
-                ))
-                js.prev_route = GRID_NOW
-            training_it += js.run_slot(s).it_kw
+            first = js.prev_route is None
+            js.prev_route = GRID_NOW
+            run_it = js.run_slot(s).it_kw
+            training_it += run_it
+            if first:
+                arrivals.append((js, facility_kw(run_it)))
         training_fac = facility_kw(training_it)
+        grid_kw = inference_fac[s] + training_fac
+        if arrivals:
+            pct = demand_percentile(demand, s)
+            for js, job_fac in arrivals:
+                # kW by which this job, run on the grid now, raises the peak so far.
+                delta = grid_kw - max(peak_so_far, grid_kw - job_fac)
+                decisions.append(Decision(
+                    t=slot.t, job=js.job.id, route=GRID_NOW,
+                    target=decision_target(GRID_NOW),
+                    reason=reason_string(
+                        slot.t, js.job.id, GRID_NOW,
+                        demand_pct=pct,
+                        carbon_g_per_kwh=slot.carbon_g_per_kwh,
+                        peak_delta_kw=delta,
+                    ),
+                    cause="COST",
+                ))
+        peak_so_far = max(peak_so_far, grid_kw)
         out_slots.append(SlotResult(
             t=slot.t,
-            grid_kw=inference_fac[s] + training_fac,
+            grid_kw=grid_kw,
             inference_kw=inference_fac[s],
             training_kw=training_fac,
             battery=_IDLE,
