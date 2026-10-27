@@ -5,5 +5,7 @@ __pycache__/
 node_modules/
 cdk.out/
 web/dist/
+infra/cdk-outputs.json
+*.json.tmp
 .DS_Store
 Thumbs.db
