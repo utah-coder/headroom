@@ -94,3 +94,22 @@ The entries below were seeded from the approved design before implementation sta
 - **Decision:** In `met_deadline`, a job unfinished at the window end is met iff `N × 15 + remaining_min + (5 if paused else 0) ≤ deadline_min`. A job that is running (or has not started) at the window end uses the plain carry-over rule from the earlier entry.
 - **Rationale:** Requirement 10.20 counts Restart_Penalties toward a job's full run time, and a paused job must resume to finish, which adds one penalty. Headroom DEFER targets already keep `t*·15 + rem + 5 ≤ plan_deadline ≤ N × 15`, so a job should never end the window paused; the extra term only makes the accounting exact if one does. Baseline never pauses, so its 100% deadlines met is unchanged.
 - **Affected component:** `sim/scheduler.py` (`met_deadline`, `job_outcome`).
+
+### 2026-10-27 17:49 MT: Demand_Charge_Risk is the peak rise a route causes
+
+- **Decision:** The headroom route cost prices demand-charge risk as `DEMAND_CHARGE_PER_KW × max(0, max_k(planned[k] + kW_k) − max(P, max_{k ≥ s} planned[k]))`, where `k` runs over the route's run slots. This is the design's `max(0, max_k(planned[k] + kW_k) − P)` whenever no reservation already sits above `P`. The same kW figure is the reason string's "would raise monthly peak by N kW", taken from the job's `GRID_NOW` pricing.
+- **Rationale:** The glossary defines Demand_Charge_Risk as the increase in the window's peak caused by a route. Requirement 13.4 asks for 0 kW when the route does not raise the peak. The design formula measures against `P` only. Once reservations exceed `P`, it charges every job the whole existing excess, even when that excess is far larger than the job's own kW (a 520 kW job was charged for 3,005 kW in the real peak scenario). The reason strings then overstated the job's effect, and routes could no longer be told apart by risk. With the marginal form, no job's risk can exceed its own kW.
+- **Affected component:** `sim/scheduler.py` (`_HeadroomPlanner.price_run`, `planned_peak_kw`).
+
+### 2026-10-27 17:49 MT: Headroom routing details left open by the design
+
+- **Decision:**
+  1. A run slot after the look-ahead `H` (only possible when `H` is a full 24 h) is priced at the unit cost of the slot 24 h earlier, which lies inside `H`. This is a persistence forecast.
+  2. `STORAGE_NOW` is offered only if the job's run-now finish is at or before `plan_deadline` (Requirement 11.9 applies to every non-grid route). It also needs the available discharge minus already committed `STORAGE_NOW` kW to be at least the job's full facility kW. A job that cannot finish in the window therefore runs `GRID_NOW` with cause `DEADLINE` every slot, like baseline.
+  3. A job is "deadline-blocked" when its first on-the-hour DEFER target fails `t*·15 + rem + 5 ≤ plan_deadline`. Later targets only finish later. Blocked jobs are processed first. A blocked job with no non-grid candidate gets `GRID_NOW` with cause `DEADLINE`.
+  4. Reservations are released by resetting `planned[s:]` to inference at the start of each slot. Every reservation from `s` on belongs to a runnable job that is re-added as it is routed. This is the same as releasing each reservation but avoids float drift.
+  5. Until task 8.7, storage dispatch only serves committed `STORAGE_NOW` load, battery first and then flywheel, with discharge floors at the spec's 10 %.
+  6. The reason-string demand percentile uses PACE `D` over all N slots, as Requirement 13.4 defines it. It is a reporting value. No cost or candidate code reads `D`, and changing future `D` leaves routes, targets, causes and power unchanged (unit-tested).
+  7. `config.PEAK_TARGET_SCALE` (1.0, ILLUSTRATIVE) multiplies `P0`, the design's first tuning knob. `scheduler.peak_target_kw(inp)` returns `P0` for `meta.params.peak_target_kw`.
+- **Rationale:** These keep the greedy deterministic and explainable, compare routes on the same work, and follow the requirements where the design pseudocode is silent.
+- **Affected component:** `sim/scheduler.py` (`run_headroom`, `_HeadroomPlanner`), `sim/config.py`.

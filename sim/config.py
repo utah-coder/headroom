@@ -95,6 +95,7 @@ CARBON_SHADOW_USD_PER_T = 50.0             # ILLUSTRATIVE
 DEADLINE_RISK_USD_PER_KWH = 0.10           # ILLUSTRATIVE
 DEADLINE_COMFORT_MIN = 240                 # ILLUSTRATIVE
 DEFER_TARGET_STEP_SLOTS = 4                # ILLUSTRATIVE: candidate resume slots on the hour
+PEAK_TARGET_SCALE = 1.0                    # ILLUSTRATIVE: multiplier on the initial planned peak P0 (tuning knob)
 
 # --- Demand response
 DR_SHED_KW = 4000                          # ILLUSTRATIVE

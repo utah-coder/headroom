@@ -147,10 +147,10 @@ def test_generated_jobs_all_meet_deadlines_and_conserve_energy():
         assert math.isclose(o.delivered_kwh, j.power_kw * min(ran_min, j.duration_min) / 60)
 
 
-def test_headroom_not_implemented_and_unknown_policy_rejected():
+def test_run_dispatches_headroom_and_rejects_unknown_policy():
     inp = make_inputs([job()])
-    with pytest.raises(NotImplementedError):
-        run("headroom", inp)
+    res = run("headroom", inp)
+    assert res.policy == "headroom" and len(res.slots) == inp.n_slots
     with pytest.raises(ValueError):
         run("bogus", inp)  # type: ignore[arg-type]
 
