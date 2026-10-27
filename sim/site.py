@@ -13,6 +13,10 @@ with an overnight floor of ``INFERENCE_MIN_FRACTION`` of the peak
 Storage splits round-trip efficiency evenly, ``eta = sqrt(rte)`` on charge
 and on discharge, so a full charge then discharge returns exactly ``rte`` of
 the energy drawn (Requirements 10.11, 10.12).
+
+``build_event_zoom`` produces the 1-second Event_Zoom for the first
+``DR_ZOOM_SECONDS`` of a DR_Event: the flywheel takes the full step at s = 0
+while the battery ramps over ``DR_BATTERY_RAMP_S`` (Requirements 14.5–14.8).
 """
 
 from __future__ import annotations
@@ -24,12 +28,17 @@ from datetime import datetime
 
 from sim.config import (
     ALT_REGIONS,
+    BATTERY,
+    DR_BATTERY_RAMP_S,
+    DR_ZOOM_SECONDS,
+    FLYWHEEL,
     IDLE_CAPACITY_PCT,
     INFERENCE_MIN_FRACTION,
     INFERENCE_PEAK_HOUR_LOCAL,
     INFERENCE_SHARE,
     IT_PEAK_KW,
     ON_PEAK_HOURS_LOCAL,
+    ROUND,
     TARIFF_OFFPEAK_PER_KWH,
     TARIFF_ONPEAK_PER_KWH,
 )
@@ -44,6 +53,9 @@ __all__ = [
     "StorageState",
     "idle_capacity_kw",
     "IDLE_PURPOSE_PREFIX",
+    "ZoomEntry",
+    "DrInfeasibleError",
+    "build_event_zoom",
 ]
 
 # Purpose string for rng_for; one independent stream per Alternate_Region.
@@ -211,3 +223,129 @@ def idle_capacity_kw(n_hours: int, seed: int, scenario: str) -> dict[str, list[f
         rng = rng_for(seed, scenario, f"{IDLE_PURPOSE_PREFIX}:{region}")
         out[region] = [rng.randint(lo, hi) * IT_PEAK_KW / 100 for _ in range(n_hours)]
     return out
+
+
+# --- Event zoom (Requirements 10.13, 10.14, 10.15, 14.5–14.8, 14.11)
+
+_SECONDS_PER_HOUR = 3600
+# Zoom values are integers in units of 10^-ROUND["kw"] kW (deci-kW), so the
+# rounded grid, flywheel and battery values sum exactly to the rounded load.
+_ZOOM_SCALE = 10 ** ROUND["kw"]
+
+
+@dataclass(frozen=True)
+class ZoomEntry:
+    """One second of the Event_Zoom; becomes an entry of ``dr_event.zoom``."""
+
+    s: int
+    grid_kw: float
+    flywheel_kw: float
+    battery_kw: float
+
+
+class DrInfeasibleError(RuntimeError):
+    """The DR_Event cannot be served within storage ratings and SOC bounds (Requirement 14.11).
+
+    ``second`` names the first violating Event_Zoom second; the scheduler sets
+    ``slot`` instead for a violating DR slot. ``scenario`` is filled in by the
+    Scenario_Builder when it reports the failure.
+    """
+
+    def __init__(
+        self,
+        second: int | None = None,
+        *,
+        slot: int | None = None,
+        scenario: str | None = None,
+        detail: str = "",
+    ) -> None:
+        self.second = second
+        self.slot = slot
+        self.scenario = scenario
+        self.detail = detail
+        where = []
+        if scenario is not None:
+            where.append(f"scenario {scenario!r}")
+        if slot is not None:
+            where.append(f"slot {slot}")
+        if second is not None:
+            where.append(f"second {second}")
+        msg = "DR event infeasible"
+        if where:
+            msg += " at " + ", ".join(where)
+        if detail:
+            msg += f": {detail}"
+        super().__init__(msg)
+
+
+def build_event_zoom(
+    site_load_kw: float,
+    cap_kw: float,
+    *,
+    battery_state: StorageState | None = None,
+    flywheel_state: StorageState | None = None,
+) -> list[ZoomEntry]:
+    """The ``DR_ZOOM_SECONDS``-entry, 1-second Event_Zoom from the DR_Event start.
+
+    With ``R = max(0, L − cap)``, the battery ramps linearly from 0 at ``s = 0``
+    to ``R`` at ``s = DR_BATTERY_RAMP_S`` and holds; the flywheel supplies
+    ``R − battery``; the grid supplies ``L − R``. Arithmetic is in integer
+    deci-kW: ``L`` is rounded to the output precision and, when ``R > 0``, the
+    grid value is rounded down so ``grid_kw ≤ cap_kw`` holds exactly.
+
+    SOC starts from ``battery_state`` / ``flywheel_state`` (default: each
+    device's configured initial SOC) and is stepped once per second.
+
+    Raises ``DrInfeasibleError`` naming the first violating second if ``cap_kw``
+    is negative (grid draw cannot be both ≥ 0 and ≤ cap), if either device
+    would exceed its power rating, or if either SOC would leave
+    [soc_min, soc_max]. Raises ``ValueError`` for a negative or non-finite load.
+    """
+    if not (math.isfinite(site_load_kw) and site_load_kw >= 0):
+        raise ValueError(f"site load must be finite and non-negative: {site_load_kw}")
+    if not math.isfinite(cap_kw):
+        raise ValueError(f"cap must be finite: {cap_kw}")
+    if cap_kw < 0:
+        raise DrInfeasibleError(
+            0, detail=f"cap {cap_kw} kW is negative; grid draw must stay >= 0 kW"
+        )
+
+    load_d = round(site_load_kw * _ZOOM_SCALE)
+    if site_load_kw <= cap_kw:
+        grid_d = load_d
+    else:
+        grid_d = min(load_d, math.floor(cap_kw * _ZOOM_SCALE))
+        if grid_d / _ZOOM_SCALE > cap_kw:  # float guard on the floor
+            grid_d -= 1
+    required_d = load_d - grid_d
+    grid_kw = grid_d / _ZOOM_SCALE
+
+    bat_spec = StorageSpec.from_config("battery", BATTERY)
+    fly_spec = StorageSpec.from_config("flywheel", FLYWHEEL)
+    bat = battery_state if battery_state is not None else bat_spec.initial_state()
+    fly = flywheel_state if flywheel_state is not None else fly_spec.initial_state()
+    hours = 1 / _SECONDS_PER_HOUR
+    ramp = DR_BATTERY_RAMP_S
+
+    entries: list[ZoomEntry] = []
+    for s in range(DR_ZOOM_SECONDS):
+        k = min(s, ramp)
+        battery_d = (2 * required_d * k + ramp) // (2 * ramp)  # round half up
+        flywheel_d = required_d - battery_d
+        battery_kw = battery_d / _ZOOM_SCALE
+        flywheel_kw = flywheel_d / _ZOOM_SCALE
+
+        for spec, kw in ((fly_spec, flywheel_kw), (bat_spec, battery_kw)):
+            if kw > spec.power_kw:
+                raise DrInfeasibleError(
+                    s,
+                    detail=f"{spec.name} needs {kw} kW, above its {spec.power_kw} kW rating",
+                )
+        try:
+            fly = fly.step(fly_spec, 0.0, flywheel_kw, hours)
+            bat = bat.step(bat_spec, 0.0, battery_kw, hours)
+        except ValueError as exc:
+            raise DrInfeasibleError(s, detail=str(exc)) from exc
+
+        entries.append(ZoomEntry(s=s, grid_kw=grid_kw, flywheel_kw=flywheel_kw, battery_kw=battery_kw))
+    return entries
