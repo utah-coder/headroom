@@ -1,6 +1,6 @@
 # Headroom
 
-**Live site:** [https://SITE_URL_PLACEHOLDER.cloudfront.net](https://SITE_URL_PLACEHOLDER.cloudfront.net) (PLACEHOLDER: replace with the `SiteUrl` output printed by `.\scripts\deploy.ps1` after the first deploy)
+**Live site:** [https://dmpmm19aeecph.cloudfront.net](https://dmpmm19aeecph.cloudfront.net)
 
 Where should this kilowatt-hour come from?
 
