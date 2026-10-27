@@ -13,6 +13,9 @@ series over the whole Data_Range, one value per UTC hour, ``None`` = missing:
   value is present that hour.
 
 Gap filling is applied later, per Scenario window (Requirement 7.13).
+
+Also selects the Peak_Scenario and Sun_Scenario windows (Requirement 9), the
+Stress_Slots (Requirement 15.1) and the DR_Event start slot (Requirement 14.2).
 """
 
 from __future__ import annotations
@@ -20,9 +23,19 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from fractions import Fraction
 from typing import Iterable, Mapping, Optional, Sequence
 
-from sim.config import DATA_END, DATA_START, HOME_REGION, REGION_TYPES, SLOTS_PER_HOUR
+from sim.config import (
+    DATA_END,
+    DATA_START,
+    DR_DURATION_SLOTS,
+    HOME_REGION,
+    REGION_TYPES,
+    SLOTS_PER_HOUR,
+    STRESS_TOP_FRACTION,
+    WINDOW_HOURS,
+)
 from sim.timeutil import parse_eia_period
 
 __all__ = [
@@ -34,6 +47,11 @@ __all__ = [
     "build_hourly",
     "fill_gaps",
     "expand_to_slots",
+    "select_peak_window",
+    "select_sun_window",
+    "stress_count",
+    "stress_flags",
+    "select_dr_start",
 ]
 
 TOTAL = "TOTAL"  # suffix of the per-region total net generation series
@@ -235,3 +253,125 @@ def expand_to_slots(hourly: Sequence[float]) -> list[float]:
             raise ValueError(f"expand_to_slots needs a gap-filled series; hour {i} is missing")
         out.extend([v] * SLOTS_PER_HOUR)
     return out
+
+
+# --- Window, stress and DR-start selection ----------------------------------
+#
+# The window selectors treat the extent of the series they are given as the
+# Data_Range. ``build_hourly`` always returns series spanning exactly the
+# Data_Range, so for real data this is 2026-06-01T00Z .. 2026-09-30T23Z.
+
+_PEAK_OFFSET_HOURS = WINDOW_HOURS // 2  # peak hour is hour 25 (index 24) of the window
+
+
+def _require_window_fits(series: HourlySeries) -> None:
+    if len(series) < WINDOW_HOURS:
+        raise ValueError(f"{series.name} has {len(series)} hours; a scenario window "
+                         f"needs {WINDOW_HOURS}")
+
+
+def select_peak_window(d: HourlySeries) -> datetime:
+    """UTC start of the Peak_Scenario window (Requirements 9.1, 9.2, 9.4).
+
+    The peak hour is the earliest hour holding the highest present value of
+    ``d``. The window starts 24 hours before it, so the peak is the window's
+    25th hour; if that would leave the range, the start is shifted by the
+    minimum number of whole hours to keep all 48 hours inside it.
+    Raises ``NoDataError`` if ``d`` has no present values.
+    """
+    _require_window_fits(d)
+    peak_idx: Optional[int] = None
+    for i, v in enumerate(d.values):
+        if not _missing(v) and (peak_idx is None or v > d.values[peak_idx]):
+            peak_idx = i  # strict '>' keeps the earliest hour on ties
+    if peak_idx is None:
+        raise NoDataError(d.name)
+    latest_start = len(d) - WINDOW_HOURS
+    start_idx = min(max(peak_idx - _PEAK_OFFSET_HOURS, 0), latest_start)
+    return d.start + start_idx * _HOUR
+
+
+def select_sun_window(sun: HourlySeries, total: HourlySeries) -> datetime:
+    """UTC start of the Sun_Scenario window (Requirements 9.3, 9.4, 9.6).
+
+    Every 48-hour window fully inside the range is a candidate. Its
+    Solar_Share is ``sum(max(SUN, 0)) / sum(TOTAL)`` over the hours where both
+    values are present; candidates whose summed total is zero (or less) are
+    excluded. The highest share wins, earliest start on ties.
+
+    Uses prefix sums, kept as exact ``Fraction``s so equal shares compare
+    equal and the earliest-start tie-break is not decided by rounding.
+    Raises ``NoDataError`` if no candidate has a non-zero total.
+    """
+    if sun.start != total.start or len(sun) != len(total):
+        raise ValueError(f"{sun.name} and {total.name} must cover the same hours")
+    _require_window_fits(sun)
+
+    num = [Fraction(0)]
+    den = [Fraction(0)]
+    for s, t in zip(sun.values, total.values):
+        if _missing(s) or _missing(t):
+            num.append(num[-1])
+            den.append(den[-1])
+        else:
+            num.append(num[-1] + Fraction(max(s, 0.0)))
+            den.append(den[-1] + Fraction(t))
+
+    best_idx: Optional[int] = None
+    best_share = Fraction(0)
+    for i in range(len(sun) - WINDOW_HOURS + 1):
+        j = i + WINDOW_HOURS
+        t_sum = den[j] - den[i]
+        if t_sum <= 0:
+            continue
+        share = (num[j] - num[i]) / t_sum
+        if best_idx is None or share > best_share:
+            best_idx, best_share = i, share
+    if best_idx is None:
+        raise NoDataError(sun.name, detail="no candidate sun window has non-zero "
+                                           "total net generation")
+    return sun.start + best_idx * _HOUR
+
+
+def stress_count(n: int) -> int:
+    """``k = ceil(STRESS_TOP_FRACTION × n)``, computed exactly (10 for n = 192)."""
+    return math.ceil(n * Fraction(str(STRESS_TOP_FRACTION)))
+
+
+def _check_present(values: Sequence[float], what: str) -> None:
+    for i, v in enumerate(values):
+        if _missing(v):
+            raise ValueError(f"{what} needs a gap-filled series; slot {i} is missing")
+
+
+def stress_flags(demand: Sequence[float]) -> list[bool]:
+    """Stress_Slot flags for slot demand values (glossary, Requirement 15.1).
+
+    The threshold is the ``stress_count(N)``-th largest demand value and a slot
+    is a Stress_Slot iff its demand is at or above it. Ties at the threshold
+    are included, so more than ``k`` slots can be flagged (DECISIONS.md,
+    "Stress slots fall in whole hours").
+    """
+    _check_present(demand, "stress_flags")
+    if not demand:
+        return []
+    threshold = sorted(demand, reverse=True)[stress_count(len(demand)) - 1]
+    return [v >= threshold for v in demand]
+
+
+def select_dr_start(demand: Sequence[float], span: int = DR_DURATION_SLOTS) -> int:
+    """Slot index where the DR_Event starts (Requirement 14.2).
+
+    Among indices ``i`` with ``i + span <= N``, returns the one with the
+    highest demand, earliest on ties.
+    """
+    _check_present(demand, "select_dr_start")
+    if span < 1:
+        raise ValueError(f"span must be at least 1, got {span}")
+    if len(demand) < span:
+        raise ValueError(f"DR span of {span} slots does not fit in {len(demand)} slots")
+    best = 0
+    for i in range(1, len(demand) - span + 1):
+        if demand[i] > demand[best]:
+            best = i
+    return best
