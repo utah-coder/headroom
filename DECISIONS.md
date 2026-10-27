@@ -82,3 +82,9 @@ The entries below were seeded from the approved design before implementation sta
 - **Decision:** Pin `typescript` 5.9.3 and `ts-node` 10.9.2 in `infra/`, with `cdk.json` running `npx ts-node --prefer-ts-exts bin/headroom.ts`. `web/` keeps its own TypeScript 7.0.2 pin.
 - **Rationale:** ts-node depends on the TypeScript compiler's JavaScript API, which the TypeScript 7 native port does not provide in the same form. The standard CDK app setup on TypeScript 5.x synthesizes without a build step. The two packages have separate lockfiles, so different compiler versions do not conflict.
 - **Affected component:** `infra/package.json`, `infra/cdk.json`.
+
+### 2026-10-27 15:05 MT: `deploy.ps1 -SkipSim` scenario list and key parsing
+
+- **Decision:** The `-SkipSim` check reads the scenario ids from `const SCENARIOS = [...]` in `web/src/config.ts`. Until that file exists (task 11.1), it falls back to `peak, sun` and says so in its output. If the file exists but the array cannot be read, the check fails instead of guessing. `Get-EnvKey` takes the last `EIA_API_KEY=` line in `.env`, trims whitespace, strips one pair of surrounding quotes or an unquoted ` # comment`, and treats a blank value as missing. The deploy also runs `npm ci` in `infra/` before `cdk deploy` (as in the design listing) and deletes a stale `infra/cdk-outputs.json` first so an old `SiteUrl` is never smoke-tested.
+- **Rationale:** The walking skeleton deploys before the UI config exists, and Requirement 2.5 names exactly `peak.json` and `sun.json`, so that is the safe default. Failing on an unreadable array keeps the check from silently passing when the sun scenario is cut or renamed (Requirement 24.7). Stripping quotes and comments keeps the secret grep from searching for the wrong string, which would make it pass without checking anything.
+- **Affected component:** `scripts/deploy.ps1`.
