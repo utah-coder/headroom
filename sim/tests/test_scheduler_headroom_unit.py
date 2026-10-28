@@ -274,9 +274,12 @@ def test_real_scenario_inference_and_power_balance(real_inputs, real_result):
     inf = real_inputs.inference_fac
     for s, r in enumerate(real_result.slots):
         assert r.inference_kw == inf[s]                                  # Req 11.10 (exact)
-        assert r.grid_kw >= 0 and r.moved_kw == 0.0
+        assert r.grid_kw >= 0 and r.moved_kw >= 0.0
+        # Moved load runs off-site: it is in moved_kw only, never in grid_kw (Req 12.6).
         assert math.isclose(r.grid_kw, r.inference_kw + r.training_kw - r.battery_kw - r.flywheel_kw,
                             abs_tol=1e-6)
+        moved = sum(m.kwh_by_slot.get(s, 0.0) for m in real_result.moves)
+        assert math.isclose(r.moved_kw * c.SLOT_MINUTES / 60, moved, abs_tol=1e-9)
         d = real_result.trace.slots[s].dispatch
         assert math.isclose(r.battery.discharge_kw + r.flywheel.discharge_kw,
                             d.dr_kw + d.commit_kw + d.peak_shave_kw + d.stress_shave_kw,
@@ -294,8 +297,11 @@ def test_real_scenario_energy_conservation(real_inputs, real_result):
         if o.completed_in_window:
             assert math.isclose(o.delivered_kwh,
                                 j.power_kw * (j.duration_min + c.RESTART_PENALTY_MIN * o.resumes) / 60)
-    training_fac_kwh = sum(r.training_kw for r in real_result.slots) * c.SLOT_MINUTES / 60
-    assert math.isclose(training_fac_kwh, delivered * c.PUE)
+    # On-site training plus moved load (both facility kW) delivers every IT kWh.
+    fac_kwh = sum(r.training_kw + r.moved_kw for r in real_result.slots) * c.SLOT_MINUTES / 60
+    assert math.isclose(fac_kwh, delivered * c.PUE)
+    moved_kwh = sum(sum(m.kwh_by_slot.values()) for m in real_result.moves)
+    assert math.isclose(moved_kwh, sum(r.moved_kw for r in real_result.slots) * c.SLOT_MINUTES / 60)
 
 
 def test_real_scenario_decisions_only_on_route_change(real_result):

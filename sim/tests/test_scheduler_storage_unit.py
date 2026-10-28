@@ -245,9 +245,9 @@ def test_reserve_floor_matches_design_value():
 
 # --- Real peak scenario (from the committed Raw_Cache)
 
-@pytest.fixture(scope="module")
-def real_run(real_inputs):  # noqa: F811
-    return real_inputs, run_headroom(real_inputs, trace=True)
+@pytest.fixture(scope="module", params=[False, True], ids=["move_off", "move_on"])
+def real_run(request, real_inputs):  # noqa: F811
+    return real_inputs, run_headroom(real_inputs, trace=True, move_enabled=request.param)
 
 
 def test_real_scenario_dr_cap_and_dr_causes(real_run):
@@ -260,7 +260,10 @@ def test_real_scenario_dr_cap_and_dr_causes(real_run):
             assert STORAGE_NOW not in [x.route for x in jt.candidates]
     dr_times = {inp.slots[s].t for s in inp.dr_range}
     dr_decisions = [d for d in res.decisions if d.cause == "DR"]
-    assert dr_decisions
+    if not res.moves:
+        # With MOVE_REGION on, jobs moved earlier can leave the DR load under
+        # the cap, so the budget never binds; without it the budget must bind.
+        assert dr_decisions
     for d in dr_decisions:
         assert d.t in dr_times and d.reason.endswith(f" — DR event, cap {round(inp.cap_kw):,} kW")
 

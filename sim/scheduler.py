@@ -37,7 +37,9 @@ from typing import Literal
 
 import numpy as np
 
+from sim import config as _config
 from sim.config import (
+    ALT_REGION_PRICE_PER_KWH,
     ALT_REGIONS,
     BATTERY,
     CARBON_SHADOW_USD_PER_T,
@@ -59,6 +61,7 @@ from sim.config import (
     PUE,
     RESTART_PENALTY_MIN,
     SLOT_MINUTES,
+    SLOTS_PER_HOUR,
     STORAGE_WEAR_USD_PER_KWH,
     STRESS_DISCHARGE_KW,
     TARIFF_OFFPEAK_PER_KWH,
@@ -691,8 +694,8 @@ class RouteCandidate:
     cost: float                     # $ over the job's whole remaining run
     finish_min: int                 # projected finish, minutes from window start
     peak_excess_kw: float           # rise in the planned window peak caused by the run
-    target_slot: int | None = None  # DEFER resume slot
-    region: str | None = None       # MOVE_REGION target (task 8.8)
+    target_slot: int | None = None  # DEFER resume slot; MOVE_REGION remote start slot
+    region: str | None = None       # MOVE_REGION target Alternate_Region
 
 
 @dataclass(frozen=True)
@@ -711,6 +714,7 @@ class JobTrace:
     target_slot: int | None
     cause: Cause
     decision: bool                            # a Decision was emitted
+    move_options: tuple[RouteCandidate, ...] = ()  # every offered MOVE_REGION region, BPAT first
 
 
 @dataclass(frozen=True)
@@ -773,6 +777,22 @@ def _pending_restart_min(js: JobState) -> int:
     return RESTART_PENALTY_MIN if js.paused else 0
 
 
+def _move_remaining_min(js: JobState) -> int:
+    """``rem'`` for MOVE_REGION: a job that has run restarts remotely with one
+    Restart_Penalty (design, route cost), whether it was running or paused."""
+    return js.remaining_min + (RESTART_PENALTY_MIN if js.started else 0)
+
+
+def _move_deadline_ok(js: JobState, s: int) -> bool:
+    """Starting remotely MOVE_DELAY_SLOTS after ``s`` still meets plan_deadline (Requirement 12.7)."""
+    return (s + MOVE_DELAY_SLOTS) * SLOT_MINUTES + _move_remaining_min(js) <= js.plan_deadline
+
+
+def _move_enabled_default() -> bool:
+    """``config.ENABLE_MOVE_REGION``, read at call time (cut flag #3, Requirement 24.8)."""
+    return bool(_config.ENABLE_MOVE_REGION)
+
+
 class _HeadroomPlanner:
     """Per-run state of the greedy Headroom_Policy.
 
@@ -785,11 +805,17 @@ class _HeadroomPlanner:
     DR handling (budget, reserve floors, the DR hold and ``DrInfeasibleError``)
     needs the Grid_Import_Cap, so it is active only when ``inp.cap_kw`` is set
     and the event has slots. Without a cap, DR slots still exclude
-    STORAGE_NOW, DEFER targets and charging, as in task 8.6. Task 8.8 fills in
-    ``_move_candidate``.
+    STORAGE_NOW, DEFER targets and charging, as in task 8.6.
+
+    MOVE_REGION (Requirement 12) is offered only when ``move_enabled``. A
+    moved job leaves the site for good: it is in transit for
+    MOVE_DELAY_SLOTS, then runs continuously in the Alternate_Region. Its
+    facility-equivalent kW goes to ``moved_fac`` (``SlotResult.moved_kw``),
+    never to on-site load or grid draw, and its IT kW is booked in the
+    ``alt_used`` ledger for every hour it runs there.
     """
 
-    def __init__(self, inp: ScenarioInputs) -> None:
+    def __init__(self, inp: ScenarioInputs, move_enabled: bool) -> None:
         self.inp = inp
         self.n = inp.n_slots
         self.inference_fac = inp.inference_fac
@@ -797,6 +823,19 @@ class _HeadroomPlanner:
         self.planned = self.base.copy()         # forecast on-site grid kW per slot
         self.unit_cost = np.array([unit_cost_per_kwh(g) for g in inp.slots], dtype=float)
         self.eff_cost = self.unit_cost.copy()
+        self.move_enabled = move_enabled
+        # $/kWh in each Alternate_Region: flat price + its carbon × shadow price.
+        self.alt_unit = {
+            r: np.array([ALT_REGION_PRICE_PER_KWH
+                         + g.alt_carbon[r] * CARBON_SHADOW_USD_PER_T / _G_PER_T
+                         for g in inp.slots], dtype=float)
+            for r in ALT_REGIONS
+        } if move_enabled else {}
+        self.alt_eff = {r: v.copy() for r, v in self.alt_unit.items()}
+        n_hours = -(-self.n // SLOTS_PER_HOUR)
+        self.alt_used = {r: np.zeros(n_hours) for r in ALT_REGIONS}   # IT kW moved per hour
+        self.moved_fac = np.zeros(self.n)        # facility-equivalent kW running off-site
+        self.moves: list[MoveRecord] = []
         self.peak_target = peak_target_kw(inp)
         self.P = self.peak_target
         self.dr = frozenset(inp.dr_range)
@@ -839,7 +878,10 @@ class _HeadroomPlanner:
         # 24-hour persistence forecast from inside H, so every route is priced
         # over the same work without reading data beyond the look-ahead.
         idx = np.arange(s, self.n)
-        self.eff_cost[s:] = self.unit_cost[s + (idx - s) % LOOKAHEAD_SLOTS]
+        persist = s + (idx - s) % LOOKAHEAD_SLOTS
+        self.eff_cost[s:] = self.unit_cost[persist]
+        for r, unit in self.alt_unit.items():
+            self.alt_eff[r][s:] = unit[persist]
 
     def is_fstress(self, t: int) -> bool:
         return self.fstress[t - self.s]
@@ -887,11 +929,11 @@ class _HeadroomPlanner:
         return DEADLINE_RISK_USD_PER_KWH * kwh_fac * max(0.0, 1 - slack / DEADLINE_COMFORT_MIN)
 
     def deadline_blocked(self, js: JobState) -> bool:
-        """No DEFER target can meet plan_deadline (later targets only finish later).
-
-        Task 8.8 also requires MOVE_REGION to be deadline-infeasible.
-        """
-        return not _defer_deadline_ok(js, _first_defer_slot(self.s))
+        """No DEFER target can meet plan_deadline (later targets only finish
+        later) and, when enabled, neither can MOVE_REGION (Requirements 11.9, 12.7)."""
+        if _defer_deadline_ok(js, _first_defer_slot(self.s)):
+            return False
+        return not (self.move_enabled and _move_deadline_ok(js, self.s))
 
     # --- DR (design, "DR behaviour in routing", "Floors")
 
@@ -938,9 +980,81 @@ class _HeadroomPlanner:
             limit = min(limit, self.bat_spec.power_kw, self.fly_spec.power_kw)
         return limit
 
-    def _move_candidate(self, js: JobState) -> RouteCandidate | None:
-        """MOVE_REGION is not offered yet (task 8.8)."""
-        return None
+    # --- MOVE_REGION (design, "Route cost", "Candidate filtering"; Requirement 12)
+
+    def _alt_capacity_ok(self, region: str, power_kw: float, a: int, b: int) -> bool:
+        """``alt_used + power_kw ≤ idle_capacity`` in every hour of slots
+        ``[a, b)`` (Requirement 12.5). Both sides are IT kW; an hour missing
+        from ``idle_capacity_kw`` has no capacity."""
+        idle = self.inp.idle_capacity_kw.get(region, ())
+        used = self.alt_used[region]
+        for hour in range(a // SLOTS_PER_HOUR, (b - 1) // SLOTS_PER_HOUR + 1):
+            if hour >= len(idle) or used[hour] + power_kw > idle[hour] + _KW_TOL:
+                return False
+        return True
+
+    def move_options(self, js: JobState, kw_fac: float) -> list[RouteCandidate]:
+        """MOVE_REGION candidates, one per Alternate_Region that passes the filter.
+
+        Offered only when enabled, to a job that has not moved, when the remote
+        run (``rem'`` from ``s + MOVE_DELAY_SLOTS``) meets plan_deadline and
+        fits the region's remaining idle capacity in every hour it runs there.
+        Cost = MOVE_PENALTY_USD once + facility kWh × (ALT_REGION_PRICE_PER_KWH
+        + alt carbon × shadow price) + deadline penalty. No demand-charge
+        risk: the load leaves the site.
+        """
+        if not self.move_enabled or js.moved_region is not None:
+            return []
+        if not _move_deadline_ok(js, self.s):                       # Requirement 12.7
+            return []
+        start = self.s + MOVE_DELAY_SLOTS
+        rem = _move_remaining_min(js)
+        a, b, u = self._profile(start, rem)
+        if b <= a:
+            return []
+        finish = start * SLOT_MINUTES + rem
+        pen = self.deadline_pen(js, finish)
+        out: list[RouteCandidate] = []
+        for region in ALT_REGIONS:                                  # Requirement 12.1
+            if not self._alt_capacity_ok(region, js.job.power_kw, a, b):
+                continue
+            energy = kw_fac / _MIN_PER_HOUR * float(np.dot(u, self.alt_eff[region][a:b]))
+            out.append(RouteCandidate(MOVE_REGION, MOVE_PENALTY_USD + energy + pen, finish, 0.0,
+                                      target_slot=start, region=region))
+        return out
+
+    def apply_move(self, js: JobState, c: RouteCandidate) -> None:
+        """Send ``js`` to ``c.region``: book idle capacity, run it remotely, record the move.
+
+        The job is in transit for MOVE_DELAY_SLOTS and then runs continuously
+        from ``c.target_slot``. A job that has run is paused first, so the
+        remote start pays one Restart_Penalty. Its IT kWh counts as delivered;
+        its facility-equivalent kW goes to ``moved_fac`` only.
+        """
+        assert c.region is not None and c.target_slot is not None
+        if js.moved_region is not None:
+            raise self._fail(f"job {js.job.id} already moved to {js.moved_region}")
+        start = c.target_slot
+        a, b, _ = self._profile(start, _move_remaining_min(js))
+        if not self._alt_capacity_ok(c.region, js.job.power_kw, a, b):
+            raise self._fail(f"job {js.job.id} exceeds {c.region} idle capacity")
+        for hour in range(a // SLOTS_PER_HOUR, (b - 1) // SLOTS_PER_HOUR + 1):
+            self.alt_used[c.region][hour] += js.job.power_kw
+        js.pause()
+        js.defer_target = None
+        js.moved_region = c.region
+        js.moved_start_slot = start
+        kwh_by_slot: dict[int, float] = {}
+        k = start
+        while js.remaining_min > 0:
+            if k >= self.n:
+                raise self._fail(f"moved job {js.job.id} runs past the window")
+            fac = facility_kw(js.run_slot(k).it_kw)
+            self.moved_fac[k] += fac
+            kwh_by_slot[k] = fac * _SLOT_HOURS
+            k += 1
+        self.moves.append(MoveRecord(job_id=js.job.id, region=c.region, decided_slot=self.s,
+                                     start_slot=start, kwh_by_slot=kwh_by_slot))
 
     def cause_for(self, js: JobState, chosen: RouteCandidate,
                   offered: Sequence[RouteCandidate], grid: RouteCandidate) -> Cause:
@@ -1107,8 +1221,9 @@ class _HeadroomPlanner:
 
     def price_routes(self, js: JobState, load_kw: float, commit_kw: float
                      ) -> tuple[RouteCandidate, list[RouteCandidate], list[RouteCandidate],
-                                float, float]:
-        """``(GRID_NOW, offered, DEFER options, planned peak, storage kW left)`` for ``js``."""
+                                list[RouteCandidate], float, float]:
+        """``(GRID_NOW, offered, DEFER options, MOVE options, planned peak,
+        storage kW left)`` for ``js``."""
         s = self.s
         kw_fac = facility_kw(js.job.power_kw)
         rem_now = js.remaining_min + _pending_restart_min(js)
@@ -1142,10 +1257,11 @@ class _HeadroomPlanner:
         if options:   # best target: lowest cost, earliest on ties
             offered.append(min(options, key=lambda c: (round(c.cost, _COST_DIGITS),
                                                        c.target_slot)))
-        move = self._move_candidate(js)
-        if move is not None:
-            offered.append(move)
-        return grid, offered, options, ref_peak, storage_left
+        moves = self.move_options(js, kw_fac)
+        if moves:     # best region: lowest cost, BPAT first on ties
+            offered.append(min(moves, key=lambda c: (round(c.cost, _COST_DIGITS),
+                                                     ALT_REGIONS.index(c.region))))
+        return grid, offered, options, moves, ref_peak, storage_left
 
     # --- applying a route
 
@@ -1167,13 +1283,20 @@ class _HeadroomPlanner:
             js.defer_target = c.target_slot
             self.reserve(kw_fac, c.target_slot, js.remaining_min + _pending_restart_min(js))
             return 0.0
-        raise ValueError(f"route {c.route} is not supported yet")
+        if c.route == MOVE_REGION:
+            self.apply_move(js, c)
+            return 0.0
+        raise ValueError(f"unknown route {c.route}")
 
 
 def _headroom_decision(inp: ScenarioInputs, s: int, js: JobState, c: RouteCandidate,
                        cause: Cause, demand_pct: int, peak_delta_kw: float) -> Decision:
     slot = inp.slots[s]
     defer_to = inp.slots[c.target_slot].t if c.route == DEFER and c.target_slot is not None else None
+    move_region = c.region if c.route == MOVE_REGION else None
+    # Target region's intensity for the start hour (Requirement 12.8).
+    move_ci = (inp.slots[c.target_slot].alt_carbon[c.region]
+               if move_region is not None and c.target_slot is not None else None)
     dr_cap = inp.cap_kw if cause == "DR" else None
     reason = reason_string(
         slot.t, js.job.id, c.route,
@@ -1181,19 +1304,22 @@ def _headroom_decision(inp: ScenarioInputs, s: int, js: JobState, c: RouteCandid
         carbon_g_per_kwh=slot.carbon_g_per_kwh,
         peak_delta_kw=peak_delta_kw,
         defer_to=defer_to,
+        move_region=move_region,
+        move_carbon_g_per_kwh=move_ci,
         dr_cap_kw=dr_cap,
     )
     return Decision(t=slot.t, job=js.job.id, route=c.route,
-                    target=decision_target(c.route, defer_to=defer_to),
+                    target=decision_target(c.route, defer_to=defer_to, move_region=move_region),
                     reason=reason, cause=cause)
 
 
-def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
+def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
+                 move_enabled: bool | None = None) -> PolicyResult:
     """Greedy Headroom_Policy with a rolling 24 h look-ahead (Requirements 11.3–11.12, 11.16, 11.17).
 
     Per slot ``s``: release reservations, order runnable jobs (deadline-blocked
-    first, then earliest plan_deadline, then id), price GRID_NOW, STORAGE_NOW
-    and DEFER(t*) over each job's whole remaining run, filter them, and pick
+    first, then earliest plan_deadline, then id), price GRID_NOW, STORAGE_NOW,
+    DEFER(t*) and MOVE_REGION over each job's whole remaining run, filter them, and pick
     the lowest cost (rounded to 1e-9, ties by ``ROUTE_ORDER``). A job with no
     non-grid candidate left because no DEFER target meets its plan_deadline
     gets ``GRID_NOW`` with cause ``DEADLINE``. Earlier slots are never revised.
@@ -1206,13 +1332,22 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
     suffix (Requirement 13.6). Storage then runs ``dispatch_storage`` (DR
     hold, STORAGE_NOW, peak shave, stress shave, charging), which raises
     ``DrInfeasibleError`` for a DR slot storage cannot cover (Requirement
-    14.11). MOVE_REGION comes with task 8.8.
+    14.11).
+
+    MOVE_REGION (Requirement 12) is offered when ``move_enabled`` is true;
+    ``None`` reads ``config.ENABLE_MOVE_REGION`` at call time. With it off,
+    the route is never offered and no MOVE_REGION Decision is emitted
+    (Requirements 12.9, 24.8). A moved job's facility-equivalent kW appears in
+    ``SlotResult.moved_kw`` (not ``training_kw`` or ``grid_kw``) and in its
+    ``MoveRecord.kwh_by_slot`` as facility kWh.
 
     With ``trace=True`` the result carries a ``HeadroomTrace`` of every
     slot's candidates, costs, pre-storage load and ``P``.
     """
     n = inp.n_slots
-    planner = _HeadroomPlanner(inp)
+    if move_enabled is None:
+        move_enabled = _move_enabled_default()
+    planner = _HeadroomPlanner(inp, move_enabled)
     states = [JobState.new(j, n) for j in inp.jobs]
     demand = [g.pace_demand_mw for g in inp.slots]   # reason percentile only (Requirement 13.4)
     out_slots: list[SlotResult] = []
@@ -1233,7 +1368,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
 
         for js in runnable:
             load_before = inference + training
-            grid, offered, options, ref_peak, storage_left = planner.price_routes(
+            grid, offered, options, moves, ref_peak, storage_left = planner.price_routes(
                 js, load_before, commit)
             if not offered or (blocked[js.job.id]
                                and not any(c.route != GRID_NOW for c in offered)):
@@ -1261,7 +1396,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
                     load_kw=load_before, planned_peak_kw=ref_peak, storage_available_kw=storage_left, grid_now=grid,
                     candidates=tuple(offered), defer_options=tuple(options),
                     route=chosen.route, target_slot=chosen.target_slot,
-                    cause=cause, decision=emit,
+                    cause=cause, decision=emit, move_options=tuple(moves),
                 ))
 
         load = inference + training
@@ -1286,7 +1421,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
             flywheel=fly,
             battery_soc_pct=planner.bat.soc_pct(planner.bat_spec),
             flywheel_soc_pct=planner.fly.soc_pct(planner.fly_spec),
-            moved_kw=0.0,
+            moved_kw=float(planner.moved_fac[s]),                  # Requirement 12.6
         ))
         if trace:
             slot_traces.append(SlotTrace(
@@ -1302,6 +1437,6 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
         slots=tuple(out_slots),
         decisions=tuple(flag_late(decisions, job_outcomes)),
         outcomes=job_outcomes,
-        moves=(),
+        moves=tuple(planner.moves),
         trace=HeadroomTrace(planner.peak_target, tuple(slot_traces)) if trace else None,
     )
