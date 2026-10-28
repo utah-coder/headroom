@@ -11,4 +11,6 @@ html {
 
 body {
   @apply bg-slate-950 text-slate-100 font-sans antialiased;
+  /* No horizontal scrolling at 390 px (Requirement 22.10). */
+  overflow-x: hidden;
 }
