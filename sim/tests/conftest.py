@@ -28,8 +28,17 @@ def _blocked(*args, **kwargs):
     raise NetworkBlockedError("tests must not use the network")
 
 
+def block_network(mp: pytest.MonkeyPatch) -> None:
+    """Patch the socket entry points on ``mp`` so any connection attempt raises.
+
+    Session-scoped fixtures run before the function-scoped ``no_network``
+    fixture, so they call this inside ``pytest.MonkeyPatch.context()``.
+    """
+    mp.setattr(socket.socket, "connect", _blocked)
+    mp.setattr(socket, "create_connection", _blocked)
+    mp.setattr(socket, "getaddrinfo", _blocked)
+
+
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    monkeypatch.setattr(socket.socket, "connect", _blocked)
-    monkeypatch.setattr(socket, "create_connection", _blocked)
-    monkeypatch.setattr(socket, "getaddrinfo", _blocked)
+    block_network(monkeypatch)

@@ -66,7 +66,7 @@ from sim.grid import (
     write_processed,
 )
 from sim.jobs import generate
-from sim.metrics import compute
+from sim.metrics import Metrics, compute
 from sim.scheduler import (
     PolicyResult,
     ScenarioInputs,
@@ -89,11 +89,13 @@ __all__ = [
     "ScenarioError",
     "GridData",
     "DrResult",
+    "ScenarioBuild",
     "load_grid_data",
     "enabled_scenarios",
     "grid_import_cap_kw",
     "build_dr",
     "build_scenario",
+    "build_scenario_full",
     "main",
 ]
 
@@ -230,6 +232,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+@dataclass(frozen=True)
+class ScenarioBuild:
+    """One scenario's pipeline objects: the inputs, both policy runs, the
+    DR_Event, the metrics and the validated Scenario_File object."""
+
+    inp: ScenarioInputs
+    base: PolicyResult
+    head: PolicyResult
+    dr: DrResult
+    metrics: Metrics
+    doc: dict[str, Any]
+
+
 def build_scenario(name: str, cache: GridData | Mapping[str, Sequence[Mapping]] | None = None,
                    seed: int | None = None, *, built_at: str | None = None) -> dict[str, Any]:
     """Build and validate one Scenario_File object in memory.
@@ -242,6 +257,18 @@ def build_scenario(name: str, cache: GridData | Mapping[str, Sequence[Mapping]] 
     or the document breaks the Output_Contract (Requirement 16.15), and
     ``DrInfeasibleError`` / ``NoDataError`` / ``CacheMissingError`` from the
     stages that detect them.
+    """
+    return build_scenario_full(name, cache, seed, built_at=built_at).doc
+
+
+def build_scenario_full(name: str,
+                        cache: GridData | Mapping[str, Sequence[Mapping]] | None = None,
+                        seed: int | None = None, *,
+                        built_at: str | None = None) -> ScenarioBuild:
+    """``build_scenario`` that also returns the intermediate objects.
+
+    Same arguments, checks and exceptions as ``build_scenario``; the acceptance
+    tests use the ``PolicyResult``s for SOC, energy and lateness checks.
     """
     data = cache if isinstance(cache, GridData) else load_grid_data(cache)
     seed = config.SEED if seed is None else seed
@@ -285,7 +312,7 @@ def build_scenario(name: str, cache: GridData | Mapping[str, Sequence[Mapping]] 
         shown = "; ".join(errors[:_MAX_ERRORS_SHOWN])
         more = f" (+{len(errors) - _MAX_ERRORS_SHOWN} more)" if len(errors) > _MAX_ERRORS_SHOWN else ""
         raise ScenarioError(name, f"Output_Contract violations: {shown}{more}")
-    return doc
+    return ScenarioBuild(inp=inp, base=base, head=head, dr=dr, metrics=metrics, doc=doc)
 
 
 def _write_all(files: Mapping[Path, str], remove: Sequence[Path] = ()) -> None:
