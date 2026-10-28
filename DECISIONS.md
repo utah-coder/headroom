@@ -113,3 +113,17 @@ The entries below were seeded from the approved design before implementation sta
   7. `config.PEAK_TARGET_SCALE` (1.0, ILLUSTRATIVE) multiplies `P0`, the design's first tuning knob. `scheduler.peak_target_kw(inp)` returns `P0` for `meta.params.peak_target_kw`.
 - **Rationale:** These keep the greedy deterministic and explainable, compare routes on the same work, and follow the requirements where the design pseudocode is silent.
 - **Affected component:** `sim/scheduler.py` (`run_headroom`, `_HeadroomPlanner`), `sim/config.py`.
+
+### 2026-10-27 18:04 MT: Storage dispatch and DR handling details left open by the design
+
+- **Decision:**
+  1. DR handling (the GRID_NOW budget `cap + DR_STORAGE_SUPPORT_KW`, the DR hold, the reserve floors, `DrInfeasibleError` and cause `DR`) runs only when `ScenarioInputs.cap_kw` is set. Without a cap, DR slots still exclude STORAGE_NOW, DEFER targets and charging, as in task 8.6.
+  2. A DR slot runs step 1 only: the battery and flywheel discharge `R = max(0, load − cap)` and nothing else, so grid = min(load, cap). Peak and stress shaving are skipped in DR slots so they cannot drain the energy later DR slots need. At the DR start the flywheel supplies `R × DR_BATTERY_RAMP_S / 2 / 900 s` (the zoom's ramp energy averaged over the slot) and the battery the rest. The battery takes over from the flywheel if it is short, and the flywheel the other way round.
+  3. `DrInfeasibleError(slot=s)` is raised when `R` exceeds what battery + flywheel can discharge in the slot (rating and 10 % floor). In the start slot `R` is also limited by each device's rating, because the zoom has the flywheel take the whole step at second 0 and the battery hold it after its ramp. A negative cap is infeasible.
+  4. Battery reserve floor while the event is ahead: the design formula, `10 % + DR_STORAGE_SUPPORT_KW × dr_hours / eta × DR_RESERVE_MARGIN` (31.7 %). The flywheel's 50 % is a value in the design, not a formula, so it is the new config constant `DR_FLYWHEEL_RESERVE_PCT = 50` (ILLUSTRATIVE).
+  5. "Cheapest `CHARGE_RANK_FRACTION` of H" means `unit_cost[s]` ≤ the k-th smallest unit cost in H, with `k = ceil(0.25 × |H|)` and ties included (the same rule as stress slots). The stress shave is battery only and limited so that grid draw stays ≥ 0.
+  6. `storage_cost_basis` after a charge is the average of the old basis, weighted by the stored energy converted back to kWh drawn (`soc / eta` per device), and this slot's unit cost, weighted by the kWh drawn.
+  7. A DR-slot choice has cause `DR` when the budget excluded GRID_NOW and the job would have picked a different route with GRID_NOW on offer. A job with no candidate left (budget spent and no DEFER target before `plan_deadline`) runs GRID_NOW with cause `DEADLINE`, bypassing the budget.
+  8. Broken invariants (negative grid, grid above the cap in a DR slot, simultaneous charge and discharge, SOC outside [10 %, 95 %]) raise `AssertionError` naming the scenario and slot, per the design's error table. The negative-grid check raised `RuntimeError` before.
+- **Rationale:** These follow the design's priority order and floors where it is explicit and pick the simplest deterministic rule where it is silent. On the real peak scenario the DR cap now holds (`R` about 1,450–1,500 kW, battery at the 31.7 % reserve when the event starts), and the zoom is feasible from that state.
+- **Affected component:** `sim/scheduler.py` (`_HeadroomPlanner`, `run_headroom`), `sim/config.py`.

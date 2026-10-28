@@ -131,7 +131,7 @@ def test_deferred_job_reservation_moves_to_its_target():
     # Both jobs defer to the cheap hour; the second sees the first's reservation there.
     routes = {d.job: (d.route, d.target) for d in res.decisions if d.t == slots[1].t}
     assert routes == {"4001": (DEFER, iso_z(slots[8].t)), "4002": (DEFER, iso_z(slots[8].t))}
-    assert all(r.grid_kw == r.inference_kw for r in res.slots[:8])
+    assert all(r.training_kw == 0.0 for r in res.slots[:8])
 
 
 # --- Deadline-risk fallback (Req 11.9, 11.11, DECISIONS.md)
@@ -165,12 +165,13 @@ def test_tight_job_outside_dr_can_use_storage_and_storage_serves_it():
     res = run_headroom(make_inputs([job(arrival_slot=2, slack_min=0)], slots), trace=True)
     assert decision_tuples(res) == [(slots[2].t, "4001", STORAGE_NOW, None, "COST")]
     kw = facility_kw(300)
-    for r in res.slots[2:6]:
-        assert math.isclose(r.battery.discharge_kw, kw) and r.flywheel.discharge_kw == 0.0
-        assert math.isclose(r.grid_kw, r.inference_kw)
-        assert r.battery.charge_kw == 0.0
-    socs = [r.battery_soc_pct for r in res.slots]
-    assert socs[1] == c.BATTERY["soc_init_pct"] and socs[5] < socs[1] and socs[6] == socs[5]
+    for s in range(2, 6):
+        r, d = res.slots[s], res.trace.slots[s].dispatch
+        # The battery serves the job first; the forecast-stress shave comes on top.
+        assert d.commit_kw == kw and d.peak_shave_kw == 0.0
+        assert math.isclose(r.battery.discharge_kw, kw + d.stress_shave_kw)
+        assert r.flywheel.discharge_kw == 0.0 and r.battery.charge_kw == 0.0
+        assert math.isclose(r.grid_kw, r.inference_kw - d.stress_shave_kw)
     assert res.outcomes["4001"].met_deadline
 
 
@@ -276,10 +277,11 @@ def test_real_scenario_inference_and_power_balance(real_inputs, real_result):
         assert r.grid_kw >= 0 and r.moved_kw == 0.0
         assert math.isclose(r.grid_kw, r.inference_kw + r.training_kw - r.battery_kw - r.flywheel_kw,
                             abs_tol=1e-6)
-        st = real_result.trace.slots[s]
-        assert math.isclose(r.battery.discharge_kw + r.flywheel.discharge_kw, st.storage_commit_kw,
+        d = real_result.trace.slots[s].dispatch
+        assert math.isclose(r.battery.discharge_kw + r.flywheel.discharge_kw,
+                            d.dr_kw + d.commit_kw + d.peak_shave_kw + d.stress_shave_kw,
                             abs_tol=1e-6)
-        assert r.battery.charge_kw == 0.0 and r.flywheel.charge_kw == 0.0
+        assert math.isclose(r.battery.charge_kw + r.flywheel.charge_kw, d.charge_kw, abs_tol=1e-6)
         for soc in (r.battery_soc_pct, r.flywheel_soc_pct):
             assert c.BATTERY["soc_min_pct"] - 1e-6 <= soc <= c.BATTERY["soc_max_pct"] + 1e-6
 
@@ -325,7 +327,9 @@ def test_real_scenario_routes_are_filtered_argmin(real_inputs, real_result):
         for jt in st.jobs:
             routes = [cand.route for cand in jt.candidates]
             if jt.cause == "DEADLINE":
-                assert jt.deadline_blocked and routes == [GRID_NOW] and jt.route == GRID_NOW
+                # Blocked with only GRID_NOW left, or nothing offered (DR budget spent).
+                assert jt.route == GRID_NOW and routes in ([GRID_NOW], [])
+                assert jt.deadline_blocked or not routes
             else:
                 best = min(jt.candidates,
                            key=lambda x: (round(x.cost, 9), ROUTE_ORDER.index(x.route)))

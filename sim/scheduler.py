@@ -32,6 +32,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 from typing import Literal
 
 import numpy as np
@@ -40,10 +41,15 @@ from sim.config import (
     ALT_REGIONS,
     BATTERY,
     CARBON_SHADOW_USD_PER_T,
+    CHARGE_RANK_FRACTION,
     DEADLINE_COMFORT_MIN,
     DEADLINE_RISK_USD_PER_KWH,
     DEFER_TARGET_STEP_SLOTS,
     DEMAND_CHARGE_PER_KW,
+    DR_BATTERY_RAMP_S,
+    DR_FLYWHEEL_RESERVE_PCT,
+    DR_RESERVE_MARGIN,
+    DR_STORAGE_SUPPORT_KW,
     FLYWHEEL,
     IT_PEAK_KW,
     LOOKAHEAD_SLOTS,
@@ -54,12 +60,13 @@ from sim.config import (
     RESTART_PENALTY_MIN,
     SLOT_MINUTES,
     STORAGE_WEAR_USD_PER_KWH,
+    STRESS_DISCHARGE_KW,
     TARIFF_OFFPEAK_PER_KWH,
     TRAINING_SHARE,
 )
 from sim.grid import GridSlot, stress_flags
 from sim.jobs import TrainingJob
-from sim.site import StorageSpec, StorageState
+from sim.site import DrInfeasibleError, StorageSpec, StorageState
 from sim.timeutil import hhmm_denver, iso_z
 
 __all__ = [
@@ -102,6 +109,7 @@ __all__ = [
     "run_slots",
     "RouteCandidate",
     "JobTrace",
+    "DispatchTrace",
     "SlotTrace",
     "HeadroomTrace",
     "run_headroom",
@@ -623,7 +631,13 @@ def run_baseline(inp: ScenarioInputs) -> PolicyResult:
 
 _G_PER_T = 1_000_000          # grams per tonne
 _SLOT_HOURS = SLOT_MINUTES / _MIN_PER_HOUR
+_SECONDS_PER_MIN = 60
 _COST_DIGITS = 9              # route costs are compared after rounding to 1e-9 $
+_KW_TOL = 1e-6                # float tolerance for kW balance checks
+# Share of the DR start slot the flywheel covers: it carries the battery's
+# linear ramp, R × DR_BATTERY_RAMP_S / 2 kW·s, so its slot-average kW is
+# R × this fraction (design, "Storage dispatch" step 1; matches the zoom).
+_DR_FLYWHEEL_START_FRACTION = DR_BATTERY_RAMP_S / 2 / (SLOT_MINUTES * _SECONDS_PER_MIN)
 
 
 def peak_target_kw(inp: ScenarioInputs) -> float:
@@ -687,6 +701,7 @@ class JobTrace:
 
     job: str
     deadline_blocked: bool                    # no DEFER target meets plan_deadline
+    load_kw: float                            # site load already routed this slot, before this job
     planned_peak_kw: float                    # max(P, planned[k ≥ s]) when priced
     storage_available_kw: float               # discharge kW left for STORAGE_NOW when priced
     grid_now: RouteCandidate                  # always priced (reason peak delta, fallback)
@@ -696,6 +711,26 @@ class JobTrace:
     target_slot: int | None
     cause: Cause
     decision: bool                            # a Decision was emitted
+
+
+@dataclass(frozen=True)
+class DispatchTrace:
+    """Why storage did what it did in one slot (design, "Storage dispatch").
+
+    The discharge terms add up to the slot's battery + flywheel discharge;
+    ``charge_kw`` is battery + flywheel charge. Only one side is non-zero.
+    """
+
+    grid_budget_kw: float            # GRID_NOW budget: cap + DR_STORAGE_SUPPORT_KW in DR, else inf
+    dr_kw: float                     # step 1: R = max(0, load − cap) in a DR slot
+    commit_kw: float                 # step 2: committed STORAGE_NOW kW
+    peak_shave_kw: float             # step 3: discharge to bring grid down to P
+    stress_shave_kw: float           # step 4: battery shave in a forecast-stress slot
+    charge_kw: float                 # step 5: battery + flywheel charge
+    cheap_slot: bool                 # unit cost within the cheapest CHARGE_RANK_FRACTION of H
+    battery_floor_kwh: float         # discharge floor in force (DR reserve while the event is ahead)
+    flywheel_floor_kwh: float
+    storage_cost_basis: float        # $/kWh drawn of the stored energy after this slot
 
 
 @dataclass(frozen=True)
@@ -709,6 +744,7 @@ class SlotTrace:
     storage_commit_kw: float         # facility kW of STORAGE_NOW jobs
     grid_kw: float
     peak_after_kw: float             # P after this slot
+    dispatch: DispatchTrace
 
 
 @dataclass(frozen=True)
@@ -746,9 +782,10 @@ class _HeadroomPlanner:
     reporting value that Requirement 13.4 defines over all N slots; it never
     reaches the cost or candidate code below.
 
-    Task 8.7 extends ``_grid_budget_kw``, ``_discharge_floor_kwh``,
-    ``cause_for`` and ``dispatch_storage`` (DR budget, reserve floors, DR
-    cause, peak and stress shaving, charging); task 8.8 fills in
+    DR handling (budget, reserve floors, the DR hold and ``DrInfeasibleError``)
+    needs the Grid_Import_Cap, so it is active only when ``inp.cap_kw`` is set
+    and the event has slots. Without a cap, DR slots still exclude
+    STORAGE_NOW, DEFER targets and charging, as in task 8.6. Task 8.8 fills in
     ``_move_candidate``.
     """
 
@@ -768,9 +805,22 @@ class _HeadroomPlanner:
         self.bat: StorageState = self.bat_spec.initial_state()
         self.fly: StorageState = self.fly_spec.initial_state()
         mean_ci = sum(g.carbon_g_per_kwh for g in inp.slots) / self.n
-        # $/kWh of stored energy (energy + carbon); task 8.7 updates it on charge.
+        # $ per kWh drawn for charging (energy + carbon) of the energy in storage;
+        # a weighted average updated on every charge.
         self.storage_cost_basis = (TARIFF_OFFPEAK_PER_KWH
                                    + mean_ci * CARBON_SHADOW_USD_PER_T / _G_PER_T)
+        self.cap = inp.cap_kw
+        self.dr_active = inp.cap_kw is not None and inp.dr_slots > 0
+        self.dr_start = inp.dr_start
+        # DR reserve floors while the event is ahead (design, "Floors"). The
+        # battery keeps enough above its 10 % floor to deliver
+        # DR_STORAGE_SUPPORT_KW for the whole event, with DR_RESERVE_MARGIN.
+        dr_hours = inp.dr_slots * _SLOT_HOURS
+        bat_need = DR_STORAGE_SUPPORT_KW * dr_hours / self.bat_spec.eta * DR_RESERVE_MARGIN
+        self.bat_reserve_kwh = min(self.bat_spec.soc_max_kwh,
+                                   self.bat_spec.soc_min_kwh + bat_need)
+        self.fly_reserve_kwh = max(self.fly_spec.soc_min_kwh,
+                                   self.fly_spec.capacity_kwh * DR_FLYWHEEL_RESERVE_PCT / 100)
         self.s = 0
         self.h_end = 0
         self.fstress: tuple[bool, ...] = ()
@@ -843,26 +893,70 @@ class _HeadroomPlanner:
         """
         return not _defer_deadline_ok(js, _first_defer_slot(self.s))
 
-    # --- hooks extended by tasks 8.7 and 8.8
+    # --- DR (design, "DR behaviour in routing", "Floors")
+
+    def in_dr_hold(self) -> bool:
+        """The current slot is a DR slot and the Grid_Import_Cap is known."""
+        return self.dr_active and self.s in self.dr
 
     def _grid_budget_kw(self) -> float:
-        """GRID_NOW is offered while ``load + kWfac ≤ budget`` (DR budget: task 8.7)."""
+        """GRID_NOW is offered while ``load + kWfac ≤ budget``.
+
+        In DR slots the budget is ``cap + DR_STORAGE_SUPPORT_KW``, so storage
+        is left to carry about DR_STORAGE_SUPPORT_KW of the shed; elsewhere
+        it is unlimited.
+        """
+        if self.in_dr_hold():
+            assert self.cap is not None
+            return self.cap + DR_STORAGE_SUPPORT_KW
         return math.inf
 
+    def dr_ahead(self) -> bool:
+        return self.dr_active and self.s < self.dr_start
+
     def _discharge_floor_kwh(self, spec: StorageSpec) -> float | None:
-        """SOC floor for discharge; ``None`` = the spec's 10 % floor (reserve floors: task 8.7)."""
-        return None
+        """SOC floor for discharge: the DR reserve while the event is ahead,
+        else ``None`` (the spec's 10 % floor)."""
+        if not self.dr_ahead():
+            return None
+        return self.bat_reserve_kwh if spec is self.bat_spec else self.fly_reserve_kwh
+
+    def _floor_kwh(self, spec: StorageSpec) -> float:
+        floor = self._discharge_floor_kwh(spec)
+        return spec.soc_min_kwh if floor is None else max(floor, spec.soc_min_kwh)
+
+    def dr_storage_limit_kw(self) -> float:
+        """Most the storage can discharge in the current DR slot.
+
+        Battery + flywheel, each limited by rating and its 10 % floor. In the
+        start slot ``R`` is also limited by each device's rating, because the
+        Event_Zoom has the flywheel take the full step at second 0 and the
+        battery hold it from the end of its ramp (Requirements 14.6–14.8).
+        """
+        limit = self.available_discharge_kw()
+        if self.s == self.dr_start:
+            limit = min(limit, self.bat_spec.power_kw, self.fly_spec.power_kw)
+        return limit
 
     def _move_candidate(self, js: JobState) -> RouteCandidate | None:
         """MOVE_REGION is not offered yet (task 8.8)."""
         return None
 
     def cause_for(self, js: JobState, chosen: RouteCandidate,
-                  offered: Sequence[RouteCandidate]) -> Cause:
-        """Cause of a cost-based choice (DR attribution: task 8.7)."""
+                  offered: Sequence[RouteCandidate], grid: RouteCandidate) -> Cause:
+        """``DR`` when the DR budget changed the choice, else ``COST`` (Requirement 13.6).
+
+        In a DR slot where the budget excluded GRID_NOW, the choice is
+        DR-caused if the job would have picked a different route with GRID_NOW
+        still on offer.
+        """
+        if self.in_dr_hold() and all(c.route != GRID_NOW for c in offered):
+            without_dr = min([*offered, grid], key=_route_key)
+            if without_dr.route != chosen.route:
+                return "DR"
         return "COST"
 
-    # --- storage
+    # --- storage (design, "Storage dispatch")
 
     def available_discharge_kw(self) -> float:
         """Battery + flywheel discharge kW for one slot, rating- and floor-limited."""
@@ -871,22 +965,126 @@ class _HeadroomPlanner:
                 + self.fly.max_discharge_kw(self.fly_spec, _SLOT_HOURS,
                                             self._discharge_floor_kwh(self.fly_spec)))
 
-    def dispatch_storage(self, load_kw: float,
-                         commit_kw: float) -> tuple[StorageFlows, StorageFlows]:
-        """Serve the slot's committed STORAGE_NOW kW, battery first, then flywheel.
+    def cheap_slot(self) -> bool:
+        """The slot's unit cost is within the cheapest CHARGE_RANK_FRACTION of H."""
+        costs = self.unit_cost[self.s:self.h_end]
+        k = max(1, math.ceil(len(costs) * Fraction(str(CHARGE_RANK_FRACTION))))
+        threshold = float(np.partition(costs, k - 1)[k - 1])
+        return bool(self.unit_cost[self.s] <= threshold)
 
-        The STORAGE_NOW filter keeps the commitment within the available
-        discharge, so the flywheel share fits its rating and floor; ``step``
-        enforces the SOC bounds. Task 8.7 adds DR, peak and stress shaving and
-        charging here.
+    def _fail(self, what: str) -> AssertionError:
+        return AssertionError(f"{self.inp.name}: slot {self.s}: {what}")
+
+    def dispatch_storage(self, load_kw: float, commit_kw: float
+                         ) -> tuple[StorageFlows, StorageFlows, DispatchTrace]:
+        """Battery and flywheel flows for the current slot, in priority order.
+
+        1. DR slot (with a cap): ``R = max(0, load − cap)``; the battery holds
+           ``R`` and, in the start slot, the flywheel covers the battery's
+           ramp. Nothing else runs and nothing charges, so grid = min(load, cap)
+           (Requirements 11.15, 14.4). Raises ``DrInfeasibleError`` if ``R``
+           exceeds ``dr_storage_limit_kw`` (Requirement 14.11).
+        2. Committed STORAGE_NOW kW, battery first, then flywheel.
+        3. Peak shave: discharge ``load − commit − P`` more, battery first
+           (Requirement 11.14).
+        4. Forecast-stress slot: up to STRESS_DISCHARGE_KW more from the battery.
+        5. Charge only if nothing discharged, outside DR and forecast stress,
+           in a cheap slot, with ``grid + charge ≤ P``: the battery up to 95 %,
+           then the flywheel up to its initial SOC (Requirement 11.13).
+
+        Discharge floors are the DR reserve while the event is ahead and 10 %
+        otherwise; grid draw never goes below 0 (Requirement 10.15). Each
+        device either charges, discharges or idles (Requirement 10.14); a
+        broken invariant raises ``AssertionError`` naming the slot.
         """
-        bat_avail = self.bat.max_discharge_kw(self.bat_spec, _SLOT_HOURS,
-                                              self._discharge_floor_kwh(self.bat_spec))
-        bat_d = min(commit_kw, bat_avail)
-        fly_d = commit_kw - bat_d
-        self.bat = self.bat.step(self.bat_spec, 0.0, bat_d, _SLOT_HOURS)
-        self.fly = self.fly.step(self.fly_spec, 0.0, fly_d, _SLOT_HOURS)
-        return StorageFlows(0.0, bat_d), StorageFlows(0.0, fly_d)
+        s, h = self.s, _SLOT_HOURS
+        bat_floor = self._floor_kwh(self.bat_spec)
+        fly_floor = self._floor_kwh(self.fly_spec)
+        bat_left = self.bat.max_discharge_kw(self.bat_spec, h, bat_floor)
+        fly_left = self.fly.max_discharge_kw(self.fly_spec, h, fly_floor)
+        bat_d = fly_d = bat_c = fly_c = 0.0
+        dr_kw = peak_kw = stress_kw = 0.0
+        budget = self._grid_budget_kw()
+        cheap = self.cheap_slot()
+
+        def take(kw: float, battery_only: bool = False) -> float:
+            """Discharge up to ``kw`` more, battery first; returns the kW taken."""
+            nonlocal bat_d, fly_d
+            b = min(kw, bat_left - bat_d)
+            f = 0.0 if battery_only else min(kw - b, fly_left - fly_d)
+            b, f = max(0.0, b), max(0.0, f)
+            bat_d += b
+            fly_d += f
+            return b + f
+
+        if self.in_dr_hold():
+            assert self.cap is not None
+            if commit_kw > 0:
+                raise self._fail(f"STORAGE_NOW committed {commit_kw} kW in a DR slot")
+            dr_kw = max(0.0, load_kw - self.cap)
+            limit = self.dr_storage_limit_kw()
+            if self.cap < 0 or dr_kw > limit + _KW_TOL:
+                raise DrInfeasibleError(
+                    slot=s, scenario=self.inp.name,
+                    detail=(f"load {load_kw:.1f} kW − cap {self.cap:.1f} kW = {dr_kw:.1f} kW "
+                            f"exceeds the {limit:.1f} kW storage can discharge"
+                            if self.cap >= 0 else f"cap {self.cap} kW is negative"))
+            if s == self.dr_start:
+                fly_d = min(dr_kw * _DR_FLYWHEEL_START_FRACTION, fly_left)
+            take(dr_kw - fly_d)
+            if bat_d + fly_d < dr_kw - _KW_TOL:
+                raise self._fail(f"DR needs {dr_kw} kW, storage gave {bat_d + fly_d} kW")
+        else:
+            if take(commit_kw) < commit_kw - _KW_TOL:
+                raise self._fail(f"STORAGE_NOW needs {commit_kw} kW, storage gave "
+                                 f"{bat_d + fly_d} kW")
+            excess = load_kw - commit_kw - self.P
+            if excess > 0:
+                peak_kw = take(excess)
+            if self.fstress[0]:
+                room = max(0.0, load_kw - bat_d - fly_d)     # grid draw stays ≥ 0
+                stress_kw = take(min(STRESS_DISCHARGE_KW, room), battery_only=True)
+            if bat_d == 0.0 and fly_d == 0.0 and s not in self.dr and not self.fstress[0]:
+                room = self.P - load_kw
+                if cheap and room > 0:
+                    bat_c = min(self.bat.max_charge_kw(self.bat_spec, h), room)
+                    fly_ceil = self.fly_spec.initial_state().soc_kwh
+                    fly_c = min(self.fly.max_charge_kw(self.fly_spec, h, fly_ceil), room - bat_c)
+                    bat_c, fly_c = max(0.0, bat_c), max(0.0, fly_c)
+                    self._update_cost_basis(bat_c + fly_c)
+
+        bat = StorageFlows(charge_kw=bat_c, discharge_kw=bat_d)
+        fly = StorageFlows(charge_kw=fly_c, discharge_kw=fly_d)
+        self.bat = self._step(self.bat_spec, self.bat, bat)
+        self.fly = self._step(self.fly_spec, self.fly, fly)
+        return bat, fly, DispatchTrace(
+            grid_budget_kw=budget, dr_kw=dr_kw, commit_kw=commit_kw, peak_shave_kw=peak_kw,
+            stress_shave_kw=stress_kw, charge_kw=bat_c + fly_c, cheap_slot=cheap,
+            battery_floor_kwh=bat_floor, flywheel_floor_kwh=fly_floor,
+            storage_cost_basis=self.storage_cost_basis,
+        )
+
+    def _step(self, spec: StorageSpec, state: StorageState, flows: StorageFlows) -> StorageState:
+        """Advance one device one slot, checking exclusivity and SOC bounds."""
+        if flows.charge_kw > 0 and flows.discharge_kw > 0:                 # Requirement 10.14
+            raise self._fail(f"{spec.name} charges and discharges at once")
+        try:
+            new = state.step(spec, flows.charge_kw, flows.discharge_kw, _SLOT_HOURS)
+        except ValueError as exc:                                           # Requirement 10.13
+            raise self._fail(str(exc)) from exc
+        if not spec.soc_min_kwh <= new.soc_kwh <= spec.soc_max_kwh:
+            raise self._fail(f"{spec.name} SOC {new.soc_kwh} kWh outside "
+                             f"[{spec.soc_min_kwh}, {spec.soc_max_kwh}] kWh")
+        return new
+
+    def _update_cost_basis(self, charge_kw: float) -> None:
+        """Weighted-average $/kWh drawn of the stored energy after a charge at this slot's cost."""
+        drawn = charge_kw * _SLOT_HOURS
+        if drawn <= 0:
+            return
+        stock = (self.bat.soc_kwh / self.bat_spec.eta + self.fly.soc_kwh / self.fly_spec.eta)
+        self.storage_cost_basis = ((self.storage_cost_basis * stock
+                                    + float(self.unit_cost[self.s]) * drawn) / (stock + drawn))
 
     # --- candidates (design, "Candidate filtering")
 
@@ -1002,8 +1200,13 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
     A Decision is emitted only when a job's route differs from its previous
     slot's (Requirements 13.1, 13.2, 13.7); late jobs are flagged at the end.
 
-    Storage dispatch serves committed STORAGE_NOW load only (task 8.6); DR
-    handling, shaving and charging come with task 8.7, MOVE_REGION with 8.8.
+    In DR slots (when ``inp.cap_kw`` is set) GRID_NOW is offered only while
+    ``load + kW ≤ cap + DR_STORAGE_SUPPORT_KW`` and STORAGE_NOW never; a
+    route change the budget forces gets cause ``DR`` and the reason's cap
+    suffix (Requirement 13.6). Storage then runs ``dispatch_storage`` (DR
+    hold, STORAGE_NOW, peak shave, stress shave, charging), which raises
+    ``DrInfeasibleError`` for a DR slot storage cannot cover (Requirement
+    14.11). MOVE_REGION comes with task 8.8.
 
     With ``trace=True`` the result carries a ``HeadroomTrace`` of every
     slot's candidates, costs, pre-storage load and ``P``.
@@ -1029,13 +1232,18 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
         job_traces: list[JobTrace] = []
 
         for js in runnable:
+            load_before = inference + training
             grid, offered, options, ref_peak, storage_left = planner.price_routes(
-                js, inference + training, commit)
-            if blocked[js.job.id] and not any(c.route != GRID_NOW for c in offered):
-                chosen, cause = grid, "DEADLINE"     # Requirement 11.9
+                js, load_before, commit)
+            if not offered or (blocked[js.job.id]
+                               and not any(c.route != GRID_NOW for c in offered)):
+                # Requirement 11.9; bypasses the DR budget. With nothing offered
+                # (DR budget spent and no DEFER target before plan_deadline) the
+                # job must run now to keep its deadline.
+                chosen, cause = grid, "DEADLINE"
             else:
                 chosen = min(offered, key=_route_key)
-                cause = planner.cause_for(js, chosen, offered)
+                cause = planner.cause_for(js, chosen, offered, grid)
             kw = planner.apply(js, chosen)
             training += kw
             if chosen.route == STORAGE_NOW:
@@ -1050,18 +1258,24 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
             if trace:
                 job_traces.append(JobTrace(
                     job=js.job.id, deadline_blocked=blocked[js.job.id],
-                    planned_peak_kw=ref_peak, storage_available_kw=storage_left, grid_now=grid,
+                    load_kw=load_before, planned_peak_kw=ref_peak, storage_available_kw=storage_left, grid_now=grid,
                     candidates=tuple(offered), defer_options=tuple(options),
                     route=chosen.route, target_slot=chosen.target_slot,
                     cause=cause, decision=emit,
                 ))
 
         load = inference + training
-        bat, fly = planner.dispatch_storage(load, commit)
+        bat, fly, dispatch = planner.dispatch_storage(load, commit)
         grid_kw = load - bat.discharge_kw - fly.discharge_kw + bat.charge_kw + fly.charge_kw
-        if grid_kw < -1e-9:
-            raise RuntimeError(f"{inp.name}: slot {s} grid draw {grid_kw} kW is negative")
+        if grid_kw < -_KW_TOL:
+            raise AssertionError(f"{inp.name}: slot {s} grid draw {grid_kw} kW is negative")
         grid_kw = max(0.0, grid_kw)                                 # Requirement 10.15
+        if planner.in_dr_hold():                                    # Requirements 11.15, 14.4
+            assert inp.cap_kw is not None
+            if grid_kw > inp.cap_kw + _KW_TOL:
+                raise AssertionError(f"{inp.name}: slot {s} grid draw {grid_kw} kW "
+                                     f"above the DR cap {inp.cap_kw} kW")
+            grid_kw = min(grid_kw, inp.cap_kw)   # absorb float noise from load − (load − cap)
         planner.P = max(planner.P, grid_kw)
         out_slots.append(SlotResult(
             t=slot.t,
@@ -1079,6 +1293,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False) -> PolicyResult:
                 slot=s, horizon_end=planner.h_end, fstress=planner.fstress,
                 peak_kw=peak_routing, jobs=tuple(job_traces), load_kw=load,
                 storage_commit_kw=commit, grid_kw=grid_kw, peak_after_kw=planner.P,
+                dispatch=dispatch,
             ))
 
     job_outcomes = outcomes(states, n)

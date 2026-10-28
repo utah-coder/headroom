@@ -104,6 +104,7 @@ DR_BATTERY_RAMP_S = 20                     # ILLUSTRATIVE
 DR_ZOOM_SECONDS = 600                      # ILLUSTRATIVE
 DR_STORAGE_SUPPORT_KW = 1500               # ILLUSTRATIVE: storage share of the shed (<= flywheel power)
 DR_RESERVE_MARGIN = 1.10                   # ILLUSTRATIVE
+DR_FLYWHEEL_RESERVE_PCT = 50               # ILLUSTRATIVE: flywheel SOC floor while the DR event is ahead
 
 # --- MOVE_REGION
 MOVE_PENALTY_USD = 75.0                    # ILLUSTRATIVE
