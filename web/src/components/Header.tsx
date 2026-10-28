@@ -25,9 +25,11 @@ interface HeaderProps {
   mode: Mode;
   onScenarioChange: (scenario: ScenarioName) => void;
   onModeChange: (mode: Mode) => void;
+  /** Set while the Guide is hidden; shows a button that brings it back. */
+  onShowGuide?: () => void;
 }
 
-export default function Header({ scenario, mode, onScenarioChange, onModeChange }: HeaderProps) {
+export default function Header({ scenario, mode, onScenarioChange, onModeChange, onShowGuide }: HeaderProps) {
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 px-4 pt-4">
       <div>
@@ -45,6 +47,15 @@ export default function Header({ scenario, mode, onScenarioChange, onModeChange 
           />
         )}
         <ToggleGroup label="Mode" options={MODE_OPTIONS} value={mode} onChange={onModeChange} />
+        {onShowGuide && (
+          <button
+            type="button"
+            onClick={onShowGuide}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800 hover:text-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
+          >
+            Show guide
+          </button>
+        )}
       </div>
     </header>
   );

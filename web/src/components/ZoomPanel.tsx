@@ -48,6 +48,8 @@ interface Props {
   drRun: number;
   /** Called once when animated playback reaches s = 599. Must be stable. */
   onDone: () => void;
+  /** Shown in place of the chart before the event fires. */
+  idleText: string;
   height?: number;
 }
 
@@ -70,7 +72,7 @@ function Swatch({ color, width, dash }: { color: string; width: number; dash?: s
   );
 }
 
-export function ZoomPanel({ drEvent, dr, drRun, onDone, height = 240 }: Props) {
+export function ZoomPanel({ drEvent, dr, drRun, onDone, idleText, height = 180 }: Props) {
   const frame = useZoomPlayback(drRun, dr === 'playing', onDone);
   const { zoom, cap_kw } = drEvent;
 
@@ -98,7 +100,7 @@ export function ZoomPanel({ drEvent, dr, drRun, onDone, height = 240 }: Props) {
           className="flex items-center justify-center rounded border border-dashed border-slate-700 px-4 text-center text-sm text-slate-300"
           style={{ height }}
         >
-          Fire the event to see the flywheel and battery take over.
+          {idleText}
         </div>
       ) : (
         <div role="img" aria-label={ariaLabel}>

@@ -63,11 +63,15 @@ export class HeadroomSiteStack extends cdk.Stack {
     });
 
     // Req 1.7, 1.8: upload web/dist and invalidate /* on every deploy.
+    // no-cache makes browsers revalidate on every load (a 304 when unchanged).
+    // Without it they cache index.html heuristically and can keep showing the
+    // previous build after a deploy.
     new s3deploy.BucketDeployment(this, 'DeploySite', {
       sources: [s3deploy.Source.asset(path.join(__dirname, '..', '..', 'web', 'dist'))],
       destinationBucket: bucket,
       distribution,
       distributionPaths: ['/*'],
+      cacheControl: [s3deploy.CacheControl.noCache()],
     });
 
     // Req 1.9

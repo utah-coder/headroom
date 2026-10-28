@@ -147,6 +147,11 @@ export function MainChart({ scenario, mode, height = 420 }: Props) {
       <h2 id={`mc-${uid}-title`} className="text-sm font-semibold text-slate-100">
         Site grid draw (kW) and PACE demand (MW)
       </h2>
+      <p className="text-sm text-slate-300">
+        {headroom
+          ? 'Where each kilowatt came from, slot by slot, with baseline faint behind it. Lower draw inside the shaded stress hours is headroom handed back to the grid.'
+          : 'The site’s grid draw when every job runs on arrival, against total PacifiCorp East demand. Shaded bands are the grid’s stress hours, the busiest 5% of these 48 hours.'}
+      </p>
 
       <div role="img" aria-label={ariaLabel}>
         <ResponsiveContainer width="100%" height={height} initialDimension={{ width: 800, height }}>

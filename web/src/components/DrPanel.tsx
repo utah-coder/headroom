@@ -1,6 +1,8 @@
 import { useId } from 'react';
 import type { Scenario } from '../types';
 import type { DrPhase, Mode } from '../state/appState';
+import { formatKw } from '../lib/format';
+import { hhmmDenver } from '../lib/time';
 import { ZoomPanel } from './ZoomPanel';
 
 // DR panel (Requirements 20.1, 20.2, 20.9). The "Fire demand-response event"
@@ -26,12 +28,23 @@ interface Props {
 export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
   const helpId = `${useId()}-dr-help`;
   const disabled = mode === 'baseline';
+  const { dr_event } = scenario;
+  const drHours = Math.round((Date.parse(dr_event.end) - Date.parse(dr_event.start)) / 3_600_000);
 
   return (
     <section aria-labelledby="dr-panel-heading" className="flex flex-col gap-3 rounded-lg bg-slate-900 p-4">
-      <h2 id="dr-panel-heading" className="text-base font-semibold text-slate-100">
-        Demand response
-      </h2>
+      <div className="flex flex-col gap-1">
+        <h2 id="dr-panel-heading" className="text-base font-semibold text-slate-100">
+          Demand response
+        </h2>
+        <p className="text-sm text-slate-300">
+          At {hhmmDenver(dr_event.start)} the utility asks the site to cut {formatKw(dr_event.requested_shed_kw)} for{' '}
+          {drHours} h.{' '}
+          {disabled
+            ? 'Baseline never uses storage or shifts jobs, so it cannot answer.'
+            : 'Headroom pauses or moves training, and the flywheel and battery cover the rest.'}
+        </p>
+      </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <button
@@ -58,7 +71,17 @@ export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
         )}
       </div>
 
-      <ZoomPanel drEvent={scenario.dr_event} dr={dr} drRun={drRun} onDone={onDone} />
+      <ZoomPanel
+        drEvent={dr_event}
+        dr={dr}
+        drRun={drRun}
+        onDone={onDone}
+        idleText={
+          disabled
+            ? 'In Headroom mode, this shows the first 10 minutes of the event second by second.'
+            : 'Fire the event to watch grid draw drop to the cap as the flywheel and battery take over.'
+        }
+      />
     </section>
   );
 }

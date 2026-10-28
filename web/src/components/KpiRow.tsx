@@ -21,7 +21,7 @@ export function KpiRow({ scenario, mode, dr }: KpiRowProps) {
         {cards.map((card) => (
           <div
             key={card.id}
-            className="flex min-w-0 flex-col gap-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 xl:px-4 xl:py-3"
+            className="flex min-w-0 flex-col gap-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 xl:px-4"
           >
             <dt className="text-sm text-slate-300">{card.label}</dt>
             <dd className="text-[28px] font-semibold leading-tight tabular-nums break-words text-slate-100 md:text-4xl xl:text-5xl xl:leading-none">

@@ -45,19 +45,42 @@ function formatSeconds(n: number): string {
 }
 
 export function selectKpis(scenario: Scenario, mode: Mode, dr: DrPhase): KpiSelection {
-  const m = mode === 'headroom' ? scenario.metrics : BASELINE;
+  const headroom = mode === 'headroom';
+  const m = headroom ? scenario.metrics : BASELINE;
 
+  // One short line under each value for an audience new to the demo. Baseline
+  // is the reference the savings are measured against, so its zeros say so.
   const cards: KpiSelection['cards'] = [
-    { id: 'headroom_kw', label: 'Headroom returned (stress hours)', value: formatKw(m.headroom_kw) },
-    { id: 'usd_saved', label: '$ saved', value: formatUsd(m.usd_saved) },
+    {
+      id: 'headroom_kw',
+      label: 'Headroom returned (stress hours)',
+      value: formatKw(m.headroom_kw),
+      note: headroom ? 'grid capacity freed at the grid’s busiest' : 'baseline is the reference point',
+    },
+    {
+      id: 'usd_saved',
+      label: '$ saved',
+      value: formatUsd(m.usd_saved),
+      note: headroom ? 'energy + demand charges, 48 h' : 'baseline is the reference point',
+    },
     {
       id: 'co2_avoided_t',
       label: 'CO₂ avoided',
       value: formatTonnes(m.co2_avoided_t),
       note: 'average intensity, not marginal', // Requirement 24.3
     },
-    { id: 'inference_sla_pct', label: 'Inference SLA', value: formatPct(m.inference_sla_pct) },
-    { id: 'deadlines_met_pct', label: 'Training deadlines met', value: formatPct(m.deadlines_met_pct) },
+    {
+      id: 'inference_sla_pct',
+      label: 'Inference SLA',
+      value: formatPct(m.inference_sla_pct),
+      note: 'customer-facing work served on time',
+    },
+    {
+      id: 'deadlines_met_pct',
+      label: 'Training deadlines met',
+      value: formatPct(m.deadlines_met_pct),
+      note: 'training jobs finished by deadline',
+    },
   ];
 
   // DR values appear only after playback completes or the static chart shows (Requirement 20.5).

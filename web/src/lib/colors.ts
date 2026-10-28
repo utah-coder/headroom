@@ -57,6 +57,10 @@ export const TEXT_PAIRS: ReadonlyArray<{ name: string; fg: string; bg: string }>
   { name: 'DR button: slate-950 on sky-300', fg: SLATE[950], bg: CONTROL.sky300 },
   { name: 'DR button hover: slate-950 on sky-200', fg: SLATE[950], bg: CONTROL.sky200 },
   { name: 'DR button, Baseline: slate-400 on slate-800', fg: SLATE[400], bg: SLATE[800] },
+  // Guide steps: the current step sits on slate-800; step numbers on slate-700.
+  { name: 'guide step, current: slate-100 on slate-800', fg: SLATE[100], bg: SLATE[800] },
+  { name: 'guide step, current: slate-300 on slate-800', fg: SLATE[300], bg: SLATE[800] },
+  { name: 'guide step number: slate-100 on slate-700', fg: SLATE[100], bg: SLATE[700] },
   { name: 'error banner: red-100 on red-950', fg: CONTROL.red100, bg: CONTROL.red950 },
   { name: 'error detail: red-200 on red-950', fg: CONTROL.red200, bg: CONTROL.red950 },
 ];
