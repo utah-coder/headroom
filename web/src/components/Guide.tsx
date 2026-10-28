@@ -44,7 +44,7 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
   const detailsId = `${useId()}-how`;
   const current = currentStep(mode, dr);
 
-  const { dr_event, metrics } = scenario;
+  const { dr_event } = scenario;
   const drHours = Math.round((Date.parse(dr_event.end) - Date.parse(dr_event.start)) / 3_600_000);
 
   const steps: { n: GuideStep; title: string; text: string }[] = [
@@ -62,8 +62,8 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
       n: 3,
       title: 'Fire a demand-response event',
       text:
-        `The utility asks the site to shed ${formatKw(dr_event.requested_shed_kw)} for ${drHours} h. ` +
-        `The flywheel answers at once, the battery within ${metrics.dr_seconds_to_full} s.`,
+        `The utility asks the site to cut ${formatKw(dr_event.requested_shed_kw)} for ${drHours} h to ease the grid. ` +
+        'The flywheel responds at once.',
     },
   ];
 
@@ -167,6 +167,11 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
               hours, after the fees for moving jobs.{' '}
               <span className="font-semibold text-slate-100">CO₂ avoided:</span> using each hour’s average grid
               carbon intensity, not the marginal plant’s.
+            </p>
+            <p>
+              <span className="font-semibold text-slate-100">Demand response:</span> a utility’s request that large
+              customers cut their power use for a few hours when the grid is strained. After the event, the KPI row
+              shows the cut requested, the share delivered, and the seconds until the battery reached full output.
             </p>
           </div>
           <div className="flex flex-col gap-2">

@@ -98,8 +98,8 @@ describe('selectKpis DR strip', () => {
 
   it('appears when DR is done', () => {
     expect(selectKpis(scenario(), 'headroom', 'done').dr).toEqual([
-      { id: 'requested_shed_kw', label: 'DR requested shed', value: '4,000 kW' },
-      { id: 'dr_delivered_pct', label: 'DR delivered', value: '100%' },
+      { id: 'requested_shed_kw', label: 'Demand-response cut requested', value: '4,000 kW' },
+      { id: 'dr_delivered_pct', label: 'Cut delivered', value: '100%' },
       { id: 'dr_seconds_to_full', label: 'Seconds to full response', value: '20 s' },
     ]);
   });

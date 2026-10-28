@@ -129,7 +129,7 @@ def test_dr_budget_defers_excess_jobs_with_dr_cause():
         ("4004", DEFER, "DR"), ("4005", DEFER, "DR"), ("4006", DEFER, "DR")]
     slot_of = {iso_z(g.t): k for k, g in enumerate(inp.slots)}
     for d in at_start:
-        assert d.reason.endswith(f" — DR event, cap {cap:,.0f} kW")
+        assert d.reason.endswith(f" — demand-response event, grid cap {cap:,.0f} kW")
         assert slot_of[d.target] >= DR_START + c.DR_DURATION_SLOTS   # resumes after the event
     assert all(d.cause != "DR" for d in res.decisions if d not in at_start)
 
@@ -270,7 +270,7 @@ def test_real_scenario_dr_cap_and_dr_causes(real_run):
         # the cap, so the budget never binds; without it the budget must bind.
         assert dr_decisions
     for d in dr_decisions:
-        assert d.t in dr_times and d.reason.endswith(f" — DR event, cap {round(inp.cap_kw):,} kW")
+        assert d.t in dr_times and d.reason.endswith(f" — demand-response event, grid cap {round(inp.cap_kw):,} kW")
 
 
 def test_real_scenario_storage_invariants(real_run):

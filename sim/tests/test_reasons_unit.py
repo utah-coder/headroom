@@ -93,12 +93,12 @@ def test_move_region_penalty_and_delay_come_from_config():
 
 def test_dr_suffix_states_cap_with_thousands_separator():
     r = reason_string(T, "4412", DEFER, defer_to=RESUME, dr_cap_kw=8123.4, **COMMON)
-    assert r.endswith("would raise monthly peak by 380 kW — DR event, cap 8,123 kW")
+    assert r.endswith("would raise monthly peak by 380 kW — demand-response event, grid cap 8,123 kW")
 
 
 def test_late_suffix_comes_last():
     r = reason_string(T, "4412", GRID_NOW, dr_cap_kw=8123, late_min=45, **COMMON)
-    assert r.endswith(" — DR event, cap 8,123 kW [LATE +45 min]")
+    assert r.endswith(" — demand-response event, grid cap 8,123 kW [LATE +45 min]")
 
 
 def test_negative_peak_delta_is_clamped_to_zero():

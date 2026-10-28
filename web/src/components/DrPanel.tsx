@@ -37,12 +37,11 @@ export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
         <h2 id="dr-panel-heading" className="text-base font-semibold text-slate-100">
           Demand response
         </h2>
+        {/* What demand response is, then this event. What each mode does about it is
+            said by the helper text and the zoom's empty state below. */}
         <p className="text-sm text-slate-300">
-          At {hhmmDenver(dr_event.start)} the utility asks the site to cut {formatKw(dr_event.requested_shed_kw)} for{' '}
-          {drHours} h.{' '}
-          {disabled
-            ? 'Baseline never uses storage or shifts jobs, so it cannot answer.'
-            : 'Headroom pauses or moves training, and the flywheel and battery cover the rest.'}
+          When the grid is strained, the utility asks large customers to use less power for a while. Here it asks this
+          site to cut {formatKw(dr_event.requested_shed_kw)} for {drHours} h from {hhmmDenver(dr_event.start)}.
         </p>
       </div>
 
@@ -78,8 +77,8 @@ export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
         onDone={onDone}
         idleText={
           disabled
-            ? 'In Headroom mode, this shows the first 10 minutes of the event second by second.'
-            : 'Fire the event to watch grid draw drop to the cap as the flywheel and battery take over.'
+            ? 'Baseline never uses storage or shifts jobs, so it cannot respond. In Headroom mode, this shows the first 10 minutes of the event second by second.'
+            : 'Fire the event: Headroom pauses or moves training, and grid draw drops to the cap as the flywheel and battery take over.'
         }
       />
     </section>

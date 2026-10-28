@@ -94,7 +94,7 @@ export function DecisionLog({ scenario, mode, dr }: Props) {
         </h2>
         {mode === 'headroom' && ordered.length > 0 && (
           <p className="text-sm text-slate-300">
-            {drFired ? 'DR decisions first. ' : 'Newest first. '}
+            {drFired ? 'Demand-response decisions first. ' : 'Newest first. '}
             Reasons cite demand percentile, carbon and peak added.
           </p>
         )}

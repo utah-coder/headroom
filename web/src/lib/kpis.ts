@@ -89,10 +89,10 @@ export function selectKpis(scenario: Scenario, mode: Mode, dr: DrPhase): KpiSele
       ? [
           {
             id: 'requested_shed_kw',
-            label: 'DR requested shed',
+            label: 'Demand-response cut requested',
             value: formatKw(scenario.dr_event.requested_shed_kw),
           },
-          { id: 'dr_delivered_pct', label: 'DR delivered', value: formatPct(scenario.metrics.dr_delivered_pct) },
+          { id: 'dr_delivered_pct', label: 'Cut delivered', value: formatPct(scenario.metrics.dr_delivered_pct) },
           {
             id: 'dr_seconds_to_full',
             label: 'Seconds to full response',

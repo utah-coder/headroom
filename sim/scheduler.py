@@ -503,7 +503,7 @@ def reason_string(
     Format::
 
         {HH:MM} job#{id} → {ROUTE}[ to {target}] — PACE demand {pct} pct,
-        {ci} g/kWh, would raise monthly peak by {dk} kW[ — DR event, cap {cap:,} kW]
+        {ci} g/kWh, would raise monthly peak by {dk} kW[ — demand-response event, grid cap {cap:,} kW]
         [ [LATE +N min]]
 
     * ``t``: slot start, shown as America/Denver ``HH:MM``.
@@ -547,7 +547,7 @@ def reason_string(
         f" would raise monthly peak by {dk} kW"
     )
     if dr_cap_kw is not None:
-        reason += f" — DR event, cap {_round_half_up(dr_cap_kw):,} kW"
+        reason += f" — demand-response event, grid cap {_round_half_up(dr_cap_kw):,} kW"
     if late_min is not None:
         reason += late_suffix(late_min)
     return _checked_len(reason)
