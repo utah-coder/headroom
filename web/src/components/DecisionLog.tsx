@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import type { Decision, Scenario } from '../types';
 import type { DrPhase, Mode } from '../state/appState';
 import { hhmmDenver } from '../lib/time';
-import { orderDecisions } from '../lib/orderDecisions';
+import { decisionKey, orderDecisions } from '../lib/orderDecisions';
+import { OptionBreakdown } from './OptionBreakdown';
 import { RouteChip, RouteGlossary } from './RouteChip';
 
-// Decision_Log panel (Requirements 20.6, 21.1–21.7).
+// Decision_Log panel (Requirements 20.6, 21.1–21.7). In Headroom each row is a
+// button that opens how its routes were priced; one row is open at a time, and
+// App marks its slot on the main chart (DECISIONS.md, "Explainable decisions").
 
 interface Props {
   scenario: Scenario;
   mode: Mode;
   dr: DrPhase;
+  /** decisionKey of the open row, or null. */
+  openKey: string | null;
+  onToggle: (key: string) => void;
 }
 
 const BASELINE_TEXT = 'Baseline: every job runs on arrival from the grid.';
@@ -23,24 +29,44 @@ function targetLabel(target: Decision['target']): string | null {
   return hhmmDenver(target);
 }
 
-function DecisionRow({ d }: { d: Decision }) {
+function DecisionRow({ d, open, onToggle }: { d: Decision; open: boolean; onToggle: (key: string) => void }) {
   const target = targetLabel(d.target);
+  const panelId = `${useId()}-options`;
+  // A button may hold only phrasing content, so the rows are spans.
   return (
-    <li className="border-b border-slate-800 py-2 last:border-b-0">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-        <time dateTime={d.t} className="font-mono tabular-nums text-slate-300">
-          {hhmmDenver(d.t)}
-        </time>
-        <span className="font-mono text-slate-100">job#{d.job}</span>
-        <RouteChip route={d.route} />
-        {target !== null && <span className="font-mono text-slate-300">→ {target}</span>}
-      </div>
-      <p className="mt-1 text-sm break-words whitespace-normal text-slate-300">{d.reason}</p>
+    <li className="border-b border-slate-800 py-1 last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => onToggle(decisionKey(d))}
+        className={`block w-full cursor-pointer rounded px-2 py-1 text-left hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 ${
+          open ? 'bg-slate-800' : ''
+        }`}
+      >
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+          <span aria-hidden="true" className={`inline-block w-3 text-slate-300 ${open ? 'rotate-90' : ''}`}>
+            ›
+          </span>
+          <time dateTime={d.t} className="font-mono tabular-nums text-slate-300">
+            {hhmmDenver(d.t)}
+          </time>
+          <span className="font-mono text-slate-100">job#{d.job}</span>
+          <RouteChip route={d.route} />
+          {target !== null && <span className="font-mono text-slate-300">→ {target}</span>}
+        </span>
+        <span className="mt-1 block text-sm break-words whitespace-normal text-slate-300">{d.reason}</span>
+      </button>
+      {open && (
+        <div id={panelId}>
+          <OptionBreakdown decision={d} />
+        </div>
+      )}
     </li>
   );
 }
 
-export function DecisionLog({ scenario, mode, dr }: Props) {
+export function DecisionLog({ scenario, mode, dr, openKey, onToggle }: Props) {
   const drFired = mode === 'headroom' && dr === 'done';
   const { decisions, dr_event } = scenario;
   const ordered = useMemo(
@@ -75,9 +101,10 @@ export function DecisionLog({ scenario, mode, dr }: Props) {
   } else {
     body = (
       <ol>
-        {ordered.map((d, i) => (
-          <DecisionRow key={`${d.t}|${d.job}|${i}`} d={d} />
-        ))}
+        {ordered.map((d) => {
+          const key = decisionKey(d);
+          return <DecisionRow key={key} d={d} open={key === openKey} onToggle={onToggle} />;
+        })}
       </ol>
     );
   }
@@ -95,7 +122,7 @@ export function DecisionLog({ scenario, mode, dr }: Props) {
         {mode === 'headroom' && ordered.length > 0 && (
           <p className="text-sm text-slate-300">
             {drFired ? 'Demand-response decisions first. ' : 'Newest first. '}
-            Reasons cite demand percentile, carbon and peak added.
+            Click a decision to see how its four options were priced.
           </p>
         )}
       </div>

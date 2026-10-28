@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contrastRatio, ROUTE_COLORS, TEXT_PAIRS } from './colors';
+import { BACKGROUNDS, contrastRatio, COST_PART_COLORS, ROUTE_COLORS, SLATE, TEXT_PAIRS } from './colors';
 
 // Palette contrast (task 11.10, Requirement 22.7): every text/background pair
 // the UI draws reaches WCAG AA, 4.5:1. TEXT_PAIRS is the list of those pairs;
@@ -36,5 +36,20 @@ describe('TEXT_PAIRS', () => {
 
   it.each(TEXT_PAIRS.map((p) => [p.name, p] as const))('%s reaches 4.5:1', (_name, pair) => {
     expect(contrastRatio(pair.fg, pair.bg)).toBeGreaterThanOrEqual(AA);
+  });
+});
+
+// Cost-part bars are graphics, not text: WCAG 1.4.11 asks 3:1 against what
+// they sit on (the panel, or slate-800 for the chosen option).
+const NON_TEXT = 3;
+
+describe('COST_PART_COLORS', () => {
+  const surfaces = { ...BACKGROUNDS, raised: SLATE[800] };
+  it.each(
+    Object.entries(COST_PART_COLORS).flatMap(([part, fg]) =>
+      Object.entries(surfaces).map(([bg, hex]) => [`${part} on ${bg}`, fg, hex] as const),
+    ),
+  )('%s reaches 3:1', (_name, fg, bg) => {
+    expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(NON_TEXT);
   });
 });

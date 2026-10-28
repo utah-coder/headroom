@@ -34,6 +34,14 @@ export function formatUsd(n: number): string {
   return `${sign(r)}$${groupInt(Math.abs(r))}`;
 }
 
+/** "$1,234.56" / "-$0.40" (cents, rounded half away from zero on the cent count). */
+export function formatUsdCents(n: number): string {
+  if (!Number.isFinite(n)) return NOT_A_NUMBER;
+  const cents = Math.round(n * 100);
+  const abs = Math.abs(cents);
+  return `${sign(cents)}$${groupInt(Math.floor(abs / 100))}.${String(abs % 100).padStart(2, '0')}`;
+}
+
 /** "12.3 t" / "-0.4 t" (one decimal). */
 export function formatTonnes(n: number): string {
   if (!Number.isFinite(n)) return NOT_A_NUMBER;

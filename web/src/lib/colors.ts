@@ -23,6 +23,16 @@ export const ROUTE_COLORS: Readonly<Record<RouteName, string>> = {
   MOVE_REGION: '#f0abfc', // fuchsia-300
 };
 
+/** Cost parts of a priced route (OptionBreakdown bars). Storage and fees reuse their route's hue. */
+export const COST_PART_COLORS = {
+  energy_usd: '#60a5fa', // blue-400
+  carbon_usd: '#a8a29e', // stone-400
+  peak_usd: '#f87171', // red-400
+  deadline_usd: '#fdba74', // orange-300
+  storage_usd: '#34d399', // emerald-400
+  fee_usd: '#e879f9', // fuchsia-400
+} as const;
+
 export const BACKGROUNDS = {
   page: SLATE[950],
   panel: SLATE[900],
@@ -63,6 +73,14 @@ export const TEXT_PAIRS: ReadonlyArray<{ name: string; fg: string; bg: string }>
   { name: 'guide step number: slate-100 on slate-700', fg: SLATE[100], bg: SLATE[700] },
   // Guide links are sky-300 (the GRID_NOW pair above) and sky-200 on hover.
   { name: 'guide link hover: sky-200 on slate-900', fg: CONTROL.sky200, bg: SLATE[900] },
+  // Decision_Log rows on hover or when open, and the chosen option in the
+  // breakdown, sit on slate-800: secondary text, the time, the job and the chips.
+  { name: 'decision row, open: slate-100 on slate-800', fg: SLATE[100], bg: SLATE[800] },
+  ...Object.entries(ROUTE_COLORS).map(([route, fg]) => ({
+    name: `decision row, open: ${route} chip on slate-800`,
+    fg,
+    bg: SLATE[800],
+  })),
   { name: 'error banner: red-100 on red-950', fg: CONTROL.red100, bg: CONTROL.red950 },
   { name: 'error detail: red-200 on red-950', fg: CONTROL.red200, bg: CONTROL.red950 },
 ];

@@ -44,7 +44,7 @@ function plainSteps(metrics: Metrics): { label: string; title: string; text: str
         "four options. The price counts the cost of the electricity, the extra charge if the job pushes the site's " +
         'peak higher, the carbon it would emit, and the risk of missing its deadline. The job takes the cheapest ' +
         "option. Like a real operator, the engine knows only the utility's forecast for the next day, not what " +
-        'will actually happen.',
+        'will actually happen. Click any decision in the log to see how each option was priced.',
     },
     {
       label: 'Scorecard',

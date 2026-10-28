@@ -11,6 +11,7 @@ import { ANIMATED_ZOOM } from './config';
 import { loadScenarios, type Loaded } from './data/loadScenarios';
 import { useReducedMotion } from './lib/useReducedMotion';
 import { initialState, reducer, type Mode } from './state/appState';
+import { decisionKey } from './lib/orderDecisions';
 import type { ScenarioName } from './types';
 
 // App shell (design "Components" and "Layout and style"). Loads both
@@ -43,6 +44,19 @@ export default function App() {
     [],
   );
   const onModeChange = useCallback((mode: Mode) => dispatch({ type: 'setMode', mode }), []);
+
+  // The Decision_Log row whose priced options are open, tagged with its
+  // scenario so switching scenarios closes it without an effect.
+  const [openDecision, setOpenDecision] = useState<{ scenario: ScenarioName; key: string } | null>(null);
+  const onToggleDecision = useCallback(
+    (key: string) =>
+      setOpenDecision((prev) =>
+        prev !== null && prev.scenario === state.scenario && prev.key === key
+          ? null
+          : { scenario: state.scenario, key },
+      ),
+    [state.scenario],
+  );
 
   // The Guide shows on first visit; hiding it is remembered in this browser
   // only. Storage can be unavailable (private mode, blocked site data), so
@@ -93,6 +107,11 @@ export default function App() {
   // only re-renders from `loaded` and never fetches (Requirements 17.2, 17.6).
   const scenario = loaded.scenarios[state.scenario];
   const { mode, dr } = state;
+  const openKey =
+    mode === 'headroom' && openDecision !== null && openDecision.scenario === state.scenario
+      ? openDecision.key
+      : null;
+  const markT = scenario.decisions.find((d) => decisionKey(d) === openKey)?.t ?? null;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -122,7 +141,7 @@ export default function App() {
         </div>
         <div data-area="chart" className="min-w-0 rounded-lg bg-slate-900 p-4 xl:col-span-2">
           {/* MainChart renders the CarbonBand below the plot on the same x-domain. */}
-          <MainChart scenario={scenario} mode={mode} />
+          <MainChart scenario={scenario} mode={mode} markT={markT} />
         </div>
         <div data-area="side" className="flex min-w-0 flex-col gap-4">
           {/* drComplete (or an instant fire) sets dr = 'done', which shows the KPI
@@ -135,7 +154,13 @@ export default function App() {
             onFire={onFireDr}
             onDone={onDrDone}
           />
-          <DecisionLog scenario={scenario} mode={mode} dr={dr} />
+          <DecisionLog
+            scenario={scenario}
+            mode={mode}
+            dr={dr}
+            openKey={openKey}
+            onToggle={onToggleDecision}
+          />
         </div>
       </main>
       <Footer scenario={scenario} />

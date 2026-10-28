@@ -5,11 +5,12 @@ import {
   ComposedChart,
   Line,
   ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
   XAxis,
   YAxis,
 } from 'recharts';
-import type { Scenario } from '../types';
+import type { IsoUtc, Scenario } from '../types';
 import type { Mode } from '../state/appState';
 import { ROUTE_COLORS, SLATE } from '../lib/colors';
 import {
@@ -113,9 +114,11 @@ interface Props {
   mode: Mode;
   /** Height of the plot in px (the carbon band and legends sit below it). */
   height?: number;
+  /** Slot of the decision open in the Decision_Log, marked with a vertical line. */
+  markT?: IsoUtc | null;
 }
 
-export function MainChart({ scenario, mode, height = 420 }: Props) {
+export function MainChart({ scenario, mode, height = 420, markT = null }: Props) {
   // useId may contain characters that are awkward inside url(#…); keep [A-Za-z0-9_-].
   const uid = useId().replace(/[^A-Za-z0-9_-]/g, '');
   const patternId = (key: string) => `mc-${uid}-${key}`;
@@ -127,6 +130,7 @@ export function MainChart({ scenario, mode, height = 420 }: Props) {
   const n = scenario.grid.length;
   const headroom = mode === 'headroom';
   const ariaLabel = chartAriaLabel(scenario, mode);
+  const markSlot = markT === null ? -1 : scenario.grid.findIndex((g) => g.t === markT);
 
   const legend: LegendItem[] = headroom
     ? [
@@ -215,6 +219,17 @@ export function MainChart({ scenario, mode, height = 420 }: Props) {
               label={{ value: 'MW', angle: 90, position: 'insideRight', fill: SLATE[300], fontSize: 12 }}
               allowDataOverflow
             />
+
+            {markSlot >= 0 && (
+              <ReferenceLine
+                yAxisId="kw"
+                x={markSlot + 0.5}
+                stroke={SLATE[100]}
+                strokeWidth={1.5}
+                strokeDasharray="3 3"
+                label={{ value: 'selected decision', position: 'insideTopLeft', fill: SLATE[100], fontSize: 12 }}
+              />
+            )}
 
             {/* Stacked supply, bottom to top: grid, battery, flywheel, moved (Req 19.4). */}
             {headroom &&

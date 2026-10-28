@@ -39,6 +39,7 @@ _PATHS: dict[str, tuple[Any, ...]] = {
     "BaselinePoint": ("baseline", 0),
     "HeadroomPoint": ("headroom", 0),
     "Decision": ("decisions", 0),
+    "OptionCost": ("decisions", 0, "options", 0),
     "DrEvent": ("dr_event",),
     "ZoomPoint": ("dr_event", "zoom", 0),
     "Metrics": ("metrics",),

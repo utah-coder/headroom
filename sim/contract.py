@@ -65,6 +65,8 @@ __all__ = [
     "BASELINE_KEYS",
     "HEADROOM_KEYS",
     "DECISION_KEYS",
+    "OPTION_COST_PARTS",
+    "OPTION_KEYS",
     "DR_EVENT_KEYS",
     "ZOOM_KEYS",
     "METRICS_KEYS",
@@ -110,7 +112,12 @@ GRID_KEYS: tuple[str, ...] = (
 )
 BASELINE_KEYS: tuple[str, ...] = ("t", "grid_kw", "inference_kw", "training_kw")
 HEADROOM_KEYS: tuple[str, ...] = BASELINE_KEYS + ("battery_kw", "flywheel_kw", "soc_pct", "moved_kw")
-DECISION_KEYS: tuple[str, ...] = ("t", "job", "route", "target", "reason")
+DECISION_KEYS: tuple[str, ...] = ("t", "job", "route", "target", "reason", "options")
+# One priced route per decisions[].options entry; the six *_usd parts add up to total_usd.
+OPTION_COST_PARTS: tuple[str, ...] = (
+    "energy_usd", "carbon_usd", "peak_usd", "deadline_usd", "storage_usd", "fee_usd",
+)
+OPTION_KEYS: tuple[str, ...] = ("route", "target", "offered", "total_usd") + OPTION_COST_PARTS
 DR_EVENT_KEYS: tuple[str, ...] = ("start", "end", "requested_shed_kw", "cap_kw", "zoom")
 ZOOM_KEYS: tuple[str, ...] = ("s", "grid_kw", "flywheel_kw", "battery_kw")
 METRICS_KEYS: tuple[str, ...] = (
@@ -128,6 +135,7 @@ INTERFACE_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "BaselinePoint": BASELINE_KEYS,
     "HeadroomPoint": HEADROOM_KEYS,
     "Decision": DECISION_KEYS,
+    "OptionCost": OPTION_KEYS,
     "DrEvent": DR_EVENT_KEYS,
     "ZoomPoint": ZOOM_KEYS,
     "Metrics": METRICS_KEYS,
@@ -241,6 +249,23 @@ def _target(target: Any) -> Any:
     return iso_z(target) if isinstance(target, datetime) else target
 
 
+def _usd(x: float) -> float:
+    return q(x, ROUND["usd"])
+
+
+def _option(o: Any) -> dict[str, Any]:
+    """One ``decisions[].options`` entry from a ``scheduler.OptionCost``."""
+    out: dict[str, Any] = {
+        "route": o.route,
+        "target": _target(o.target),
+        "offered": bool(o.offered),
+        "total_usd": _usd(o.total_usd),
+    }
+    for k in OPTION_COST_PARTS:
+        out[k] = _usd(getattr(o, k))
+    return out
+
+
 def build_doc(
     name: str,
     inp: "ScenarioInputs",
@@ -312,6 +337,7 @@ def build_doc(
             "route": d.route,
             "target": _target(d.target),
             "reason": d.reason,
+            "options": [_option(o) for o in d.options],
         }
         for d in sorted(head.decisions, key=lambda d: d.t)
     ]
@@ -567,22 +593,93 @@ def _check_decisions(c: _Checker, decisions: Any,
             continue
         if "target" not in e or "route" not in e:
             continue
-        target = e["target"]
-        if route == "DEFER":
-            tt = _parse_iso(target)
-            if tt is None:
-                c.err(f"{path}.target", f"DEFER needs a UTC timestamp YYYY-MM-DDTHH:MM:SSZ, "
-                                        f"got {target!r}")
-            else:
-                if t is not None and tt <= t:
-                    c.err(f"{path}.target", f"DEFER target {target} is not later than t {e['t']}")
-                c.slot_time(tt, f"{path}.target", w0)
-        elif route == "MOVE_REGION":
-            if target not in MOVE_TARGETS:
-                c.err(f"{path}.target", f"MOVE_REGION needs one of {list(MOVE_TARGETS)}, "
-                                        f"got {target!r}")
-        elif target is not None:
-            c.err(f"{path}.target", f"{route} needs null, got {target!r}")
+        _check_target(c, route, e["target"], f"{path}.target", t, w0)
+        if "options" in e:
+            _check_options(c, e["options"], f"{path}.options", route, e["target"], t, w0)
+
+
+def _check_target(c: _Checker, route: str, target: Any, path: str,
+                  t: datetime | None, w0: datetime | None) -> None:
+    """``target`` encoding for ``route`` (Requirement 16.8), for a decision or an option."""
+    if route == "DEFER":
+        tt = _parse_iso(target)
+        if tt is None:
+            c.err(path, f"DEFER needs a UTC timestamp YYYY-MM-DDTHH:MM:SSZ, got {target!r}")
+        else:
+            if t is not None and tt <= t:
+                c.err(path, f"DEFER target {target} is not later than t {iso_z(t)}")
+            c.slot_time(tt, path, w0)
+    elif route == "MOVE_REGION":
+        if target not in MOVE_TARGETS:
+            c.err(path, f"MOVE_REGION needs one of {list(MOVE_TARGETS)}, got {target!r}")
+    elif target is not None:
+        c.err(path, f"{route} needs null, got {target!r}")
+
+
+# Each of the seven rounded values is within half a cent of its exact value.
+_OPTION_SUM_TOL_USD = 0.04
+
+
+def _check_options(c: _Checker, options: Any, path: str, route: str, target: Any,
+                   t: datetime | None, w0: datetime | None) -> None:
+    """``decisions[].options`` (DECISIONS.md, "Explainable decisions").
+
+    Every option is well formed, routes are unique and the parts add up to
+    ``total_usd``. The decision's route appears once, with the decision's
+    target, and is offered; the one exception is the deadline fallback, a
+    GRID_NOW run when nothing at all was offered. Its total is the lowest
+    among the offered options. Exact ties are allowed here because totals
+    are rounded to cents; the scheduler's ROUTE_ORDER tie-break is tested on
+    unrounded costs.
+    """
+    if not c.array(options, path):
+        return
+    seen: set[str] = set()
+    good: list[dict] = []
+    for i, o in enumerate(options):
+        p = f"{path}[{i}]"
+        if not c.obj(o, p, OPTION_KEYS):
+            continue
+        ok = True
+        r = o.get("route")
+        if r not in ROUTES:
+            c.err(f"{p}.route", f"expected one of {list(ROUTES)}, got {r!r}")
+            ok = False
+        elif r in seen:
+            c.err(f"{p}.route", f"{r} appears more than once")
+            ok = False
+        else:
+            seen.add(r)
+            if "target" in o:
+                _check_target(c, r, o["target"], f"{p}.target", t, w0)
+        if "offered" in o and not isinstance(o["offered"], bool):
+            c.err(f"{p}.offered", f"expected a boolean, got {_type_name(o['offered'])}")
+            ok = False
+        total = c.number(o, "total_usd", p)
+        parts = [v for k in OPTION_COST_PARTS if (v := c.number(o, k, p, 0)) is not None]
+        if total is None or len(parts) != len(OPTION_COST_PARTS):
+            ok = False
+        elif abs(sum(parts) - total) > _OPTION_SUM_TOL_USD:
+            c.err(p, f"cost parts add up to {sum(parts):.2f}, total_usd is {total}")
+        if ok and "target" in o and "offered" in o:
+            good.append(o)
+    if len(good) != len(options):
+        return
+
+    chosen = [o for o in good if o["route"] == route]
+    if len(chosen) != 1:
+        c.err(path, f"expected the chosen route {route} once, found it {len(chosen)} times")
+        return
+    ch = chosen[0]
+    if ch["target"] != target:
+        c.err(path, f"chosen {route} option has target {ch['target']!r}, decision has {target!r}")
+    offered = [o for o in good if o["offered"]]
+    if not ch["offered"] and not (route == "GRID_NOW" and not offered):
+        c.err(path, f"chosen route {route} was not offered")
+    cheaper = [o["route"] for o in offered if o["total_usd"] < ch["total_usd"]]
+    if cheaper:
+        c.err(path, f"chosen {route} (${ch['total_usd']}) is not the cheapest offered option; "
+                    f"{', '.join(cheaper)} cost less")
 
 
 def _check_dr(c: _Checker, dr: Any, w0: datetime | None, w1: datetime | None) -> None:

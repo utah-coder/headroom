@@ -24,6 +24,7 @@ from sim.jobs import TrainingJob
 from sim.scheduler import (
     ROUTE_ORDER,
     Decision,
+    OptionCost,
     PolicyResult,
     ScenarioInputs,
     SlotResult,
@@ -56,6 +57,12 @@ def _slot_result(t, grid, inf, trn, *, charge=0.0, discharge=0.0, soc=60.0, move
     )
 
 
+def _opt(route, target, offered, *, energy=0.0, carbon=0.0, peak=0.0, deadline=0.0,
+         storage=0.0, fee=0.0):
+    total = energy + carbon + peak + deadline + storage + fee
+    return OptionCost(route, target, offered, total, energy, carbon, peak, deadline, storage, fee)
+
+
 def make_doc(n: int = 192) -> dict:
     times = slot_times(T0, n)
     hourly = [5000 + round(800 * math.sin(2 * math.pi * h / 24)) for h in range(n // 4)]
@@ -86,10 +93,21 @@ def make_doc(n: int = 192) -> dict:
     head_slots[2] = _slot_result(times[2], 8515.44, 3250.0, 6500.0, discharge=1234.56, soc=59.96)
     head_slots[3] = _slot_result(times[3], 9100.0, 3250.0, 5850.0, moved=650.0)
     decisions = (  # deliberately out of order; build_doc sorts by t
-        Decision(times[12], "4002", "STORAGE_NOW", None, "storage reason", "COST"),
-        Decision(times[4], "4001", "DEFER", iso_z(times[8]), "defer reason", "COST"),
-        Decision(times[10], "4002", "MOVE_REGION", "BPAT", "move reason", "COST"),
-        Decision(times[8], "4001", "GRID_NOW", None, "grid reason", "COST"),
+        Decision(times[12], "4002", "STORAGE_NOW", None, "storage reason", "COST", options=(
+            _opt("GRID_NOW", None, True, energy=8.123, carbon=3.0, peak=36.0),
+            _opt("STORAGE_NOW", None, True, energy=4.0, carbon=1.5, storage=6.25),
+        )),
+        Decision(times[4], "4001", "DEFER", iso_z(times[8]), "defer reason", "COST", options=(
+            _opt("GRID_NOW", None, True, energy=20.0, carbon=9.0, peak=18.0),
+            _opt("DEFER", iso_z(times[8]), True, energy=15.0, carbon=6.0, deadline=1.234),
+        )),
+        Decision(times[10], "4002", "MOVE_REGION", "BPAT", "move reason", "DR", options=(
+            _opt("GRID_NOW", None, False, energy=10.0, carbon=4.0),
+            _opt("MOVE_REGION", "BPAT", True, energy=5.0, carbon=0.5, fee=75.0),
+        )),
+        Decision(times[8], "4001", "GRID_NOW", None, "grid reason", "DEADLINE", options=(
+            _opt("GRID_NOW", None, True, energy=20.0, carbon=9.0),
+        )),
     )
     head = PolicyResult(policy="headroom", slots=tuple(head_slots), decisions=decisions,
                         outcomes={}, moves=())
@@ -131,6 +149,7 @@ def test_build_doc_key_order_and_values(valid_doc):
     assert tuple(d["baseline"][0]) == contract.BASELINE_KEYS
     assert tuple(d["headroom"][0]) == contract.HEADROOM_KEYS
     assert tuple(d["decisions"][0]) == contract.DECISION_KEYS
+    assert tuple(d["decisions"][0]["options"][0]) == contract.OPTION_KEYS
     assert tuple(d["dr_event"]) == contract.DR_EVENT_KEYS
     assert tuple(d["dr_event"]["zoom"][0]) == contract.ZOOM_KEYS
     assert tuple(d["metrics"]) == contract.METRICS_KEYS
@@ -147,6 +166,14 @@ def test_build_doc_key_order_and_values(valid_doc):
 
     assert [x["t"] for x in d["decisions"]] == sorted(x["t"] for x in d["decisions"])
     assert [x["route"] for x in d["decisions"]] == ["DEFER", "GRID_NOW", "MOVE_REGION", "STORAGE_NOW"]
+    defer_opts = d["decisions"][0]["options"]
+    assert [o["route"] for o in defer_opts] == ["GRID_NOW", "DEFER"]
+    assert defer_opts[1] == {
+        "route": "DEFER", "target": "2026-07-14T20:00:00Z", "offered": True, "total_usd": 22.23,
+        "energy_usd": 15.0, "carbon_usd": 6.0, "peak_usd": 0.0, "deadline_usd": 1.23,
+        "storage_usd": 0.0, "fee_usd": 0.0,
+    }
+    assert d["decisions"][2]["options"][0]["offered"] is False
     assert d["headroom"][1]["battery_kw"] == -500.0         # charging is negative
     assert d["headroom"][2]["battery_kw"] == 1234.6
     assert d["headroom"][3]["moved_kw"] == 650.0
@@ -286,6 +313,30 @@ MUTATIONS = [
     ("empty reason", _set(["decisions", 0, "reason"], ""), "decisions[0].reason"),
     ("job id is int", _set(["decisions", 0, "job"], 4001), "decisions[0].job"),
     ("decision extra key", _set(["decisions", 0, "cause"], "COST"), "decisions[0]: unexpected key"),
+    # decisions[].options (DECISIONS.md, "Explainable decisions")
+    ("options missing", _delete(["decisions", 0, "options"]), "decisions[0]: missing key 'options'"),
+    ("options not array", _set(["decisions", 0, "options"], {}), "decisions[0].options: expected an array"),
+    ("option extra key", _set(["decisions", 0, "options", 0, "co2_t"], 1.0),
+     "decisions[0].options[0]: unexpected key"),
+    ("option unknown route", _set(["decisions", 0, "options", 0, "route"], "WAIT"),
+     "decisions[0].options[0].route"),
+    ("option route twice", _set(["decisions", 0, "options", 0, "route"], "DEFER"),
+     "appears more than once"),
+    ("option offered not bool", _set(["decisions", 0, "options", 0, "offered"], 1),
+     "decisions[0].options[0].offered"),
+    ("option part negative", _set(["decisions", 0, "options", 1, "energy_usd"], -15.0),
+     "decisions[0].options[1].energy_usd"),
+    ("option parts do not add up", _set(["decisions", 0, "options", 1, "total_usd"], 25.0),
+     "cost parts add up to"),
+    ("option DEFER target null", _set(["decisions", 0, "options", 1, "target"], None),
+     "decisions[0].options[1].target"),
+    ("chosen route not priced", _delete(["decisions", 0, "options", 1]), "chosen route DEFER once"),
+    ("chosen target differs", _set(["decisions", 0, "options", 1, "target"], "2026-07-14T21:00:00Z"),
+     "decisions[0].options: chosen DEFER option has target"),
+    ("chosen not offered", _set(["decisions", 0, "options", 1, "offered"], False),
+     "chosen route DEFER was not offered"),
+    ("chosen not cheapest", lambda d: d["decisions"][0]["options"][0].update(
+        total_usd=20.0, energy_usd=20.0, carbon_usd=0.0, peak_usd=0.0), "GRID_NOW cost less"),
     # 16.9 dr_event
     ("dr end before start", _set(["dr_event", "end"], "2026-07-14T22:00:00Z"), "must be earlier"),
     ("dr end after window", _set(["dr_event", "end"], "2026-07-16T18:15:00Z"), "dr_event.end"),
@@ -328,8 +379,26 @@ def test_key_constants_match_scheduler_and_types():
     assert contract.INTERFACE_KEYS["HeadroomPoint"] == contract.HEADROOM_KEYS
     assert set(contract.INTERFACE_KEYS) == {
         "Scenario", "Meta", "Sources", "GridPoint", "BaselinePoint", "HeadroomPoint",
-        "Decision", "DrEvent", "ZoomPoint", "Metrics",
+        "Decision", "OptionCost", "DrEvent", "ZoomPoint", "Metrics",
     }
+
+
+def test_deadline_fallback_grid_now_not_offered_passes(doc):
+    # GRID_NOW over the DR budget with nothing else offered: the job runs anyway.
+    d = next(x for x in doc["decisions"] if x["route"] == "GRID_NOW")
+    d["options"][0]["offered"] = False
+    assert validate(doc) == []
+    d["options"].append({**d["options"][0], "route": "STORAGE_NOW", "offered": True,
+                         "total_usd": 50.0, "energy_usd": 50.0, "carbon_usd": 0.0})
+    assert any("chosen route GRID_NOW was not offered" in e for e in validate(doc))
+
+
+def test_rounded_tie_between_options_passes(doc):
+    # Totals are rounded to cents, so a cent-level tie is not a tie-break error.
+    opts = doc["decisions"][0]["options"]
+    opts[0].update(total_usd=opts[1]["total_usd"], energy_usd=opts[1]["total_usd"],
+                   carbon_usd=0.0, peak_usd=0.0)
+    assert validate(doc) == []
 
 
 # --- q() -----------------------------------------------------------------------

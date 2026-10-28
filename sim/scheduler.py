@@ -88,6 +88,7 @@ __all__ = [
     "SlotRun",
     "StorageFlows",
     "SlotResult",
+    "OptionCost",
     "Decision",
     "JobOutcome",
     "MoveRecord",
@@ -287,6 +288,26 @@ class SlotResult:
 
 
 @dataclass(frozen=True)
+class OptionCost:
+    """One route priced for a Decision, split into the parts of its Route_Cost.
+
+    The six parts add up to ``total_usd``, which is the ``RouteCandidate.cost``
+    the planner compared (DECISIONS.md, "Explainable decisions").
+    """
+
+    route: str
+    target: str | None          # same encoding as Decision.target
+    offered: bool               # passed candidate filtering (GRID_NOW can fail the DR budget)
+    total_usd: float
+    energy_usd: float           # electricity price × kWh (site tariff, or the alt-region price)
+    carbon_usd: float           # kWh × g/kWh × CARBON_SHADOW_USD_PER_T / 1e6
+    peak_usd: float             # DEMAND_CHARGE_PER_KW × rise in the planned window peak
+    deadline_usd: float         # deadline-risk penalty
+    storage_usd: float          # STORAGE_NOW's first slot from stored energy, with wear
+    fee_usd: float              # MOVE_PENALTY_USD for MOVE_REGION
+
+
+@dataclass(frozen=True)
 class Decision:
     t: datetime                 # UTC slot start (Requirement 13.8)
     job: str
@@ -295,6 +316,7 @@ class Decision:
     reason: str
     cause: Cause
     late: bool = False
+    options: tuple[OptionCost, ...] = ()   # headroom only: the routes compared, GRID_NOW first
 
 
 @dataclass(frozen=True)
@@ -640,6 +662,7 @@ _G_PER_T = 1_000_000          # grams per tonne
 _SLOT_HOURS = SLOT_MINUTES / _MIN_PER_HOUR
 _SECONDS_PER_MIN = 60
 _COST_DIGITS = 9              # route costs are compared after rounding to 1e-9 $
+_SPLIT_TOL_USD = 1e-6         # OptionCost parts must add up to the route cost within this
 _KW_TOL = 1e-6                # float tolerance for kW balance checks
 # Share of the DR start slot the flywheel covers: it carries the battery's
 # linear ramp, R × DR_BATTERY_RAMP_S / 2 kW·s, so its slot-average kW is
@@ -855,6 +878,13 @@ class _HeadroomPlanner:
         self.arrivals = arrival_forecast_kw(self.n)
         self.unit_cost = np.array([unit_cost_per_kwh(g) for g in inp.slots], dtype=float)
         self.eff_cost = self.unit_cost.copy()
+        # The two parts of unit_cost, for OptionCost only: price + carbon_usd
+        # is exactly unit_cost, and both are remapped like eff_cost.
+        self.unit_price = np.array([g.price_per_kwh for g in inp.slots], dtype=float)
+        self.unit_carbon_usd = np.array([g.carbon_g_per_kwh * CARBON_SHADOW_USD_PER_T / _G_PER_T
+                                         for g in inp.slots], dtype=float)
+        self.eff_price = self.unit_price.copy()
+        self.eff_carbon_usd = self.unit_carbon_usd.copy()
         self.move_enabled = move_enabled
         # $/kWh in each Alternate_Region: flat price + its carbon × shadow price.
         self.alt_unit = {
@@ -864,6 +894,12 @@ class _HeadroomPlanner:
             for r in ALT_REGIONS
         } if move_enabled else {}
         self.alt_eff = {r: v.copy() for r, v in self.alt_unit.items()}
+        self.alt_carbon_usd = {
+            r: np.array([g.alt_carbon[r] * CARBON_SHADOW_USD_PER_T / _G_PER_T for g in inp.slots],
+                        dtype=float)
+            for r in self.alt_unit
+        }
+        self.alt_eff_carbon_usd = {r: v.copy() for r, v in self.alt_carbon_usd.items()}
         n_hours = -(-self.n // SLOTS_PER_HOUR)
         self.alt_used = {r: np.zeros(n_hours) for r in ALT_REGIONS}   # IT kW moved per hour
         self.moved_fac = np.zeros(self.n)        # facility-equivalent kW running off-site
@@ -914,8 +950,11 @@ class _HeadroomPlanner:
         idx = np.arange(s, self.n)
         persist = s + (idx - s) % LOOKAHEAD_SLOTS
         self.eff_cost[s:] = self.unit_cost[persist]
+        self.eff_price[s:] = self.unit_price[persist]
+        self.eff_carbon_usd[s:] = self.unit_carbon_usd[persist]
         for r, unit in self.alt_unit.items():
             self.alt_eff[r][s:] = unit[persist]
+            self.alt_eff_carbon_usd[r][s:] = self.alt_carbon_usd[r][persist]
 
     def is_fstress(self, t: int) -> bool:
         return self.fstress[t - self.s]
@@ -1255,9 +1294,13 @@ class _HeadroomPlanner:
 
     def price_routes(self, js: JobState, load_kw: float, commit_kw: float
                      ) -> tuple[RouteCandidate, list[RouteCandidate], list[RouteCandidate],
-                                list[RouteCandidate], float, float]:
+                                list[RouteCandidate], float, float, tuple[OptionCost, ...]]:
         """``(GRID_NOW, offered, DEFER options, MOVE options, planned peak,
-        storage kW left)`` for ``js``."""
+        storage kW left, option costs)`` for ``js``.
+
+        The option costs are GRID_NOW (always; ``offered=False`` when the DR
+        budget excludes it), then each other offered route: STORAGE_NOW, the
+        best DEFER target and the best MOVE_REGION region."""
         s = self.s
         kw_fac = facility_kw(js.job.power_kw)
         rem_now = js.remaining_min + _pending_restart_min(js)
@@ -1295,7 +1338,71 @@ class _HeadroomPlanner:
         if moves:     # best region: lowest cost, BPAT first on ties
             offered.append(min(moves, key=lambda c: (round(c.cost, _COST_DIGITS),
                                                      ALT_REGIONS.index(c.region))))
-        return grid, offered, options, moves, ref_peak, storage_left
+        costs = (self.option_cost(js, grid, any(c is grid for c in offered)),
+                 *(self.option_cost(js, c, True) for c in offered if c is not grid))
+        return grid, offered, options, moves, ref_peak, storage_left, costs
+
+    # --- explaining a price (OptionCost; never feeds back into routing)
+
+    @staticmethod
+    def _split(kw_fac: float, u: np.ndarray, price: np.ndarray,
+               carbon_usd: np.ndarray) -> tuple[float, float]:
+        """``(energy $, carbon $)`` of running ``kw_fac`` over profile ``u``:
+        the two halves of ``price_run``'s energy term."""
+        return (kw_fac / _MIN_PER_HOUR * float(np.dot(u, price)),
+                kw_fac / _MIN_PER_HOUR * float(np.dot(u, carbon_usd)))
+
+    def option_cost(self, js: JobState, c: RouteCandidate, offered: bool) -> OptionCost:
+        """Re-price ``c`` for ``js`` in the current slot, split into its parts.
+
+        Mirrors the cost formulas in ``price_routes``, ``defer_options`` and
+        ``move_options``, with the energy term split into price and carbon.
+        Call it before ``apply``, which changes the job's remaining run.
+        Raises ``AssertionError`` if the parts miss ``c.cost`` by more than
+        ``_SPLIT_TOL_USD``: the split is then wrong, never the cost.
+        """
+        s = self.s
+        kw_fac = facility_kw(js.job.power_kw)
+        storage = fee = 0.0
+        target: str | None = None
+        if c.route in (GRID_NOW, STORAGE_NOW):
+            rem = js.remaining_min + _pending_restart_min(js)
+            start = s
+            if c.route == STORAGE_NOW:
+                u_s = slot_minutes_used(rem)
+                storage = (kw_fac * u_s / _MIN_PER_HOUR
+                           * (self.storage_cost_basis / self.bat_spec.eta + STORAGE_WEAR_USD_PER_KWH))
+                start, rem = s + 1, rem - u_s
+            a, b, u = self._profile(start, rem)
+            energy, carbon = self._split(kw_fac, u, self.eff_price[a:b], self.eff_carbon_usd[a:b])
+        elif c.route == DEFER:
+            assert c.target_slot is not None
+            t = c.target_slot
+            target = iso_z(self.inp.slots[t].t)
+            a, b, u = self._profile(t, js.remaining_min + (RESTART_PENALTY_MIN if js.started else 0))
+            energy, carbon = self._split(kw_fac, u, self.eff_price[a:b], self.eff_carbon_usd[a:b])
+            if js.started:   # restart energy at slot t, priced as in defer_options
+                restart_kwh = kw_fac * RESTART_PENALTY_MIN / _MIN_PER_HOUR
+                energy += restart_kwh * float(self.unit_price[t])
+                carbon += restart_kwh * float(self.unit_carbon_usd[t])
+        elif c.route == MOVE_REGION:
+            assert c.region is not None and c.target_slot is not None
+            target = c.region
+            a, b, u = self._profile(c.target_slot, _move_remaining_min(js))
+            energy, carbon = self._split(kw_fac, u, np.full(b - a, ALT_REGION_PRICE_PER_KWH),
+                                         self.alt_eff_carbon_usd[c.region][a:b])
+            fee = MOVE_PENALTY_USD
+        else:
+            raise ValueError(f"unknown route {c.route}")
+        peak = DEMAND_CHARGE_PER_KW * c.peak_excess_kw
+        deadline = self.deadline_pen(js, c.finish_min)
+        total = energy + carbon + peak + deadline + storage + fee
+        if abs(total - c.cost) > _SPLIT_TOL_USD:
+            raise self._fail(f"job {js.job.id} {c.route}: cost parts add up to {total!r}, "
+                             f"route cost is {c.cost!r}")
+        return OptionCost(route=c.route, target=target, offered=offered, total_usd=c.cost,
+                          energy_usd=energy, carbon_usd=carbon, peak_usd=peak,
+                          deadline_usd=deadline, storage_usd=storage, fee_usd=fee)
 
     # --- applying a route
 
@@ -1324,7 +1431,8 @@ class _HeadroomPlanner:
 
 
 def _headroom_decision(inp: ScenarioInputs, s: int, js: JobState, c: RouteCandidate,
-                       cause: Cause, demand_pct: int, peak_delta_kw: float) -> Decision:
+                       cause: Cause, demand_pct: int, peak_delta_kw: float,
+                       options: tuple[OptionCost, ...]) -> Decision:
     slot = inp.slots[s]
     defer_to = inp.slots[c.target_slot].t if c.route == DEFER and c.target_slot is not None else None
     move_region = c.region if c.route == MOVE_REGION else None
@@ -1344,7 +1452,7 @@ def _headroom_decision(inp: ScenarioInputs, s: int, js: JobState, c: RouteCandid
     )
     return Decision(t=slot.t, job=js.job.id, route=c.route,
                     target=decision_target(c.route, defer_to=defer_to, move_region=move_region),
-                    reason=reason, cause=cause)
+                    reason=reason, cause=cause, options=options)
 
 
 def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
@@ -1402,7 +1510,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
 
         for js in runnable:
             load_before = inference + training
-            grid, offered, options, moves, ref_peak, storage_left = planner.price_routes(
+            grid, offered, options, moves, ref_peak, storage_left, costs = planner.price_routes(
                 js, load_before, commit)
             if not offered or (blocked[js.job.id]
                                and not any(c.route != GRID_NOW for c in offered)):
@@ -1422,7 +1530,7 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
                 if demand_pct is None:
                     demand_pct = demand_percentile(demand, s)
                 decisions.append(_headroom_decision(inp, s, js, chosen, cause, demand_pct,
-                                                    grid.peak_excess_kw))
+                                                    grid.peak_excess_kw, costs))
             js.prev_route = chosen.route
             if trace:
                 job_traces.append(JobTrace(

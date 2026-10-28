@@ -29,3 +29,8 @@ export function orderDecisions(
   );
   return keyed.map((k) => k.d);
 }
+
+/** Stable id of a decision: a job gets at most one decision per slot. */
+export function decisionKey(d: Decision): string {
+  return `${d.t}|${d.job}`;
+}

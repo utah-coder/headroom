@@ -57,6 +57,22 @@ export interface Decision {
   route: Route;
   target: IsoUtc | 'BPAT' | 'CISO' | null; // DEFER: later slot; MOVE_REGION: region; else null
   reason: string;
+  options: OptionCost[]; // the routes compared: GRID_NOW first, then each other offered route
+}
+
+// One route priced for a decision. The six *_usd parts add up to total_usd
+// (to the cent, after rounding).
+export interface OptionCost {
+  route: Route;
+  target: IsoUtc | 'BPAT' | 'CISO' | null; // same encoding as Decision.target
+  offered: boolean; // false: GRID_NOW over the demand-response grid budget
+  total_usd: number;
+  energy_usd: number;
+  carbon_usd: number;
+  peak_usd: number;
+  deadline_usd: number;
+  storage_usd: number;
+  fee_usd: number;
 }
 
 export interface ZoomPoint {
