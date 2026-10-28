@@ -414,7 +414,7 @@ Some steps need the user's credentials or actions. They are marked **USER ACTION
     - This replaces the stub scenario JSON from task 2.2 with real output; commit the generated files
     - Add the step `python -m sim.run_scenarios` (offline, from the committed cache) to `.github/workflows/ci.yml` before the web build
     - _Requirements: 4.1, 4.3, 7.7, 14.1, 14.2, 14.3, 15.6, 15.10, 16.1, 16.15, 24.7_
-  - [ ]* 9.7 Write property test for determinism in `sim/tests/test_determinism.py`
+  - [x]* 9.7 Write property test for determinism in `sim/tests/test_determinism.py`
     - **Property 37: Determinism**
     - **Validates: Requirements 10.19, 12.4, 16.13**
   - [x] 9.8 Write the acceptance tests in `sim/tests/test_acceptance.py` (required)
@@ -459,7 +459,7 @@ Some steps need the user's credentials or actions. They are marked **USER ACTION
       - `ANIMATED_ZOOM`
       - `REPO_URL`
     - _Requirements: 16.12, 22.4, 24.7, 24.9_
-  - [ ]* 11.2 Write the contract mirror test in `sim/tests/test_types_mirror.py`
+  - [x]* 11.2 Write the contract mirror test in `sim/tests/test_types_mirror.py`
     - Parse the `export interface` blocks in `types.ts` and compare their field names with the key sets enforced by `contract.validate`
     - _Requirements: 16.12_
   - [x] 11.3 Implement `web/src/data/loadScenarios.ts`
@@ -493,7 +493,7 @@ Some steps need the user's credentials or actions. They are marked **USER ACTION
   - [ ]* 11.9 Write property test for web Denver labels in `web/src/lib/time.test.ts`
     - **Property 41: Denver time labels** (web half)
     - **Validates: Requirements 7.11, 19.1, 21.2**
-  - [ ]* 11.10 Write the palette contrast test in `web/src/lib/colors.test.ts`
+  - [x]* 11.10 Write the palette contrast test in `web/src/lib/colors.test.ts`
     - Every text/background pair in the palette has a contrast ratio of at least 4.5:1
     - _Requirements: 22.7_
 
@@ -539,7 +539,7 @@ Some steps need the user's credentials or actions. They are marked **USER ACTION
   - [ ]* 12.7 Write property test for decision ordering in `web/src/lib/orderDecisions.test.ts`
     - **Property 39: Decision log ordering**
     - **Validates: Requirements 20.6, 21.1**
-  - [ ]* 12.8 Write KPI selector unit tests in `web/src/lib/kpis.test.ts`
+  - [x]* 12.8 Write KPI selector unit tests in `web/src/lib/kpis.test.ts`
     - Baseline returns zeros and 100%; Headroom returns the metrics; the DR values appear only when `done`
     - _Requirements: 18.6, 18.7, 20.5_
   - [ ]* 12.9 Write built-output checks in `sim/tests/test_web_dist.py` (skipped when `web/dist` is absent)

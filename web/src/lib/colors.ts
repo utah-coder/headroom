@@ -61,6 +61,8 @@ export const TEXT_PAIRS: ReadonlyArray<{ name: string; fg: string; bg: string }>
   { name: 'guide step, current: slate-100 on slate-800', fg: SLATE[100], bg: SLATE[800] },
   { name: 'guide step, current: slate-300 on slate-800', fg: SLATE[300], bg: SLATE[800] },
   { name: 'guide step number: slate-100 on slate-700', fg: SLATE[100], bg: SLATE[700] },
+  // Guide links are sky-300 (the GRID_NOW pair above) and sky-200 on hover.
+  { name: 'guide link hover: sky-200 on slate-900', fg: CONTROL.sky200, bg: SLATE[900] },
   { name: 'error banner: red-100 on red-950', fg: CONTROL.red100, bg: CONTROL.red950 },
   { name: 'error detail: red-200 on red-950', fg: CONTROL.red200, bg: CONTROL.red950 },
 ];
