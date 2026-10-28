@@ -1,0 +1,7 @@
+/* Footer offset (Requirement 22.12). Footer.tsx writes its measured height to
+   --footer-h with a ResizeObserver, so the last element in <main> is never
+   hidden behind the fixed footer. The fallback covers the first paint before
+   the observer has run. */
+main {
+  padding-bottom: var(--footer-h, 6rem);
+}
