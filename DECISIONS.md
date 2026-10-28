@@ -138,3 +138,13 @@ The entries below were seeded from the approved design before implementation sta
   7. `RouteCandidate.target_slot` holds the remote start slot for MOVE_REGION; `JobTrace.move_options` lists every region that passed the filter.
 - **Rationale:** These follow the design's cost formula and filter table and keep the energy and emission accounting consistent with `sim/metrics.py`. On the real peak scenario, earlier moves leave the DR-start load under the cap (`R` = 0), so no DR-caused decisions appear with moves on. The storage DR test therefore runs with moves off and on, and requires DR causes only when nothing moved. This is recorded for checkpoint 10.
 - **Affected component:** `sim/scheduler.py` (`_HeadroomPlanner.move_options`, `apply_move`, `run_headroom`), `sim/tests/test_scheduler_storage_unit.py`.
+
+### 2026-10-27 18:55 MT: Scenario_Builder details left open by the design
+- **Decision:**
+  1. `meta.built_at` is the build's UTC start time, truncated to the second, and is the same in every file of one run. `build_scenario` and `main` accept a `built_at` override for tests. No `SOURCE_DATE_EPOCH` support.
+  2. The Event_Zoom starts from the Headroom run's Battery and Flywheel SOC at the *start* of the DR start slot, which is the end-of-slot SOC of the previous slot (the configured initial SOC if the DR starts in slot 0). `L` is the Headroom `inference_kw + training_kw` in the DR start slot, before storage.
+  3. `DrResult` is defined in `sim/run_scenarios.py`. It carries the fields `sim/metrics.py` and `sim/contract.py` read.
+  4. All files are written in two phases. Every `*.json.tmp` is written and fsynced first, then each is moved into place with `os.replace`. With `ENABLE_SUN_SCENARIO = False`, a stale `sun.json` is deleted only after `peak.json` has been written. `data/processed/` is written only after the Scenario_Files succeed, and it stays untracked as generated output.
+  5. The cut flags are read at call time from `sim.config`, so tests can switch them.
+- **Rationale:** These follow the design's flow. Building and serializing every scenario in memory before writing means a failure in `sun` leaves both existing files unchanged. A wall-clock `built_at` matches the brief's example value, and Requirement 16.13 excludes it from byte comparison.
+- **Affected component:** `sim/run_scenarios.py`.

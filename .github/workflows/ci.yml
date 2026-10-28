@@ -39,6 +39,12 @@ jobs:
           python -m pip install -r sim/requirements.txt
           pytest -q
 
+      # Offline from the committed data/raw cache (load_all(offline=True)):
+      # no network and no EIA_API_KEY. Regenerates web/public/scenarios/*.json
+      # for the web build; CI does not commit them.
+      - name: build scenarios (offline, from committed cache)
+        run: python -m sim.run_scenarios
+
       # Must run before cdk synth: the stack bundles ../web/dist.
       - name: web build
         working-directory: web
