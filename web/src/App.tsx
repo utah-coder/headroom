@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useReducer, useState, type ReactNode } from 'react';
+import { DecisionLog } from './components/DecisionLog';
 import ErrorBanner from './components/ErrorBanner';
+import { Footer } from './components/Footer';
 import Header from './components/Header';
+import { KpiRow } from './components/KpiRow';
+import { MainChart } from './components/MainChart';
 import { loadScenarios, type Loaded } from './data/loadScenarios';
 import { initialState, reducer, type Mode } from './state/appState';
 import type { ScenarioName } from './types';
@@ -52,39 +56,42 @@ export default function App() {
     );
   }
 
-  // The selected Scenario; task 12.6 passes it, with mode and dr, to the panels.
+  // The selected Scenario. Both scenarios are already in memory, so a toggle
+  // only re-renders from `loaded` and never fetches (Requirements 17.2, 17.6).
   const scenario = loaded.scenarios[state.scenario];
+  const { mode, dr } = state;
 
   return (
     <div className="flex min-h-screen flex-col">
       <Header
         scenario={state.scenario}
-        mode={state.mode}
+        mode={mode}
         onScenarioChange={onScenarioChange}
         onModeChange={onModeChange}
       />
+      {/* Footer.tsx writes its measured height to --footer-h; the inline padding
+          keeps the last row of <main> clear of the fixed footer (Requirement 22.12). */}
       <main
-        className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-3"
-        style={{ paddingBottom: 'calc(var(--footer-h, 0px) + 1rem)' }}
+        className="grid flex-1 grid-cols-1 content-start gap-4 p-4 xl:grid-cols-3"
+        style={{ paddingBottom: 'calc(var(--footer-h, 6rem) + 1rem)' }}
         data-scenario={scenario.meta.scenario}
-        data-mode={state.mode}
-        data-dr={state.dr}
+        data-mode={mode}
+        data-dr={dr}
       >
-        <section aria-label="Key results" data-area="kpis" className="xl:col-span-3">
-          <Placeholder name="KPI row" className="min-h-36" />
-        </section>
-        <section aria-label="Grid draw" data-area="chart" className="flex flex-col gap-2 xl:col-span-2">
-          <Placeholder name="Main chart" className="min-h-80 flex-1 xl:min-h-[520px]" />
-          <Placeholder name="Carbon band" className="min-h-12" />
-        </section>
-        <section aria-label="Demand response and decisions" data-area="side" className="flex flex-col gap-4">
-          <Placeholder name="Demand-response button and zoom" className="min-h-48" />
-          <Placeholder name="Decision log" className="min-h-48 flex-1" />
-        </section>
+        <div data-area="kpis" className="xl:col-span-3">
+          <KpiRow scenario={scenario} mode={mode} dr={dr} />
+        </div>
+        <div data-area="chart" className="min-w-0 rounded-lg bg-slate-900 p-4 xl:col-span-2">
+          {/* MainChart renders the CarbonBand below the plot on the same x-domain. */}
+          <MainChart scenario={scenario} mode={mode} />
+        </div>
+        <div data-area="side" className="flex min-w-0 flex-col gap-4">
+          {/* Task 14.2 replaces this slot with DrPanel and ZoomPanel. */}
+          <Placeholder name="Demand-response button and zoom (task 14.2)" className="min-h-48" />
+          <DecisionLog scenario={scenario} mode={mode} dr={dr} />
+        </div>
       </main>
-      <div data-area="footer">
-        <Placeholder name="Footer" className="min-h-16" />
-      </div>
+      <Footer scenario={scenario} />
     </div>
   );
 }
@@ -98,7 +105,7 @@ function StatusScreen({ children }: { children: ReactNode }) {
   );
 }
 
-// Temporary grid-area marker; task 12.6 replaces each one with its panel.
+// Temporary grid-area marker for the DR slot; task 14.2 replaces it.
 function Placeholder({ name, className = '' }: { name: string; className?: string }) {
   return (
     <div
