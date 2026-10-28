@@ -149,10 +149,15 @@ def test_dr_budget_defers_excess_jobs_with_dr_cause():
 
 def test_peak_shave_battery_first_then_flywheel_down_to_p():
     n = 16
-    inp = inputs(jobs(2, 5000, 60, 0), slots_for(n))   # 13,000 kW of must-run jobs
+    p = peak_target_kw(inputs([], slots_for(n)))
+    # Two must-run jobs sized so the load sits about 5,000 kW above P: more than
+    # the battery's 4,000 kW rating, less than battery + flywheel, for any P0.
+    power = math.ceil((p + BAT.power_kw + FLY.power_kw / 2 - INFERENCE_FAC) / 2 / c.PUE)
+    inp = inputs(jobs(2, power, 60, 0), slots_for(n))
     res = run_headroom(inp, trace=True)
-    p = peak_target_kw(inp)
-    load = INFERENCE_FAC + 2 * facility_kw(5000)
+    assert peak_target_kw(inp) == p
+    load = INFERENCE_FAC + 2 * facility_kw(power)
+    assert BAT.power_kw < load - p < BAT.power_kw + FLY.power_kw
     r, d = res.slots[0], dispatch(res, 0)
     assert res.trace.slots[0].storage_commit_kw == 0.0
     assert d.peak_shave_kw == pytest.approx(load - p) and d.stress_shave_kw == 0.0

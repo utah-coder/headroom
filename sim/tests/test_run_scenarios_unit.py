@@ -5,11 +5,15 @@ builder failure paths in test_run_scenarios.py (task 9.9).
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
-from sim.config import BATTERY, DR_DURATION_SLOTS, DR_SHED_KW, FLYWHEEL, SLOT_MINUTES
-from sim.run_scenarios import DrResult, _soc_before, _write_all, build_scenario, load_grid_data
+from sim.config import (BATTERY, DR_BATTERY_RAMP_S, DR_DURATION_SLOTS, DR_SHED_KW, FLYWHEEL,
+                        SLOT_MINUTES)
+from sim.metrics import dr_seconds_to_full
+from sim.run_scenarios import (DrResult, _soc_before, _write_all, build_dr, build_scenario,
+                               load_grid_data)
 from sim.scheduler import PolicyResult, SlotResult, StorageFlows
 from sim.site import StorageSpec
 
@@ -60,6 +64,23 @@ def test_dr_window_and_zoom_balance(peak_doc):
     for z in dr["zoom"]:
         assert z["grid_kw"] + z["flywheel_kw"] + z["battery_kw"] == pytest.approx(load, abs=0.25)
         assert z["grid_kw"] <= dr["cap_kw"]
+
+
+def test_required_kw_matches_the_zoom_so_seconds_to_full_is_found():
+    # load 8,458.06 rounds to 8,458.1 and cap 7,864.04 floors to 7,864.0, so the
+    # zoom carries 594.1 kW while load − cap is 594.02 (594.0 at 1 dp).
+    t0 = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    row = SlotResult(t=t0, grid_kw=0.0, inference_kw=4000.0, training_kw=4458.06,
+                     battery=_IDLE, flywheel=_IDLE, battery_soc_pct=60.0,
+                     flywheel_soc_pct=90.0, moved_kw=0.0)
+    head = PolicyResult("headroom", (row,), (), {}, ())
+    inp = SimpleNamespace(cap_kw=7864.04, dr_start=0, dr_slots=DR_DURATION_SLOTS,
+                          slots=(SimpleNamespace(t=t0),), requested_shed_kw=float(DR_SHED_KW),
+                          name="test")
+    dr = build_dr(inp, head)
+    end = dr.zoom[-1]
+    assert dr.required_kw == pytest.approx(594.1) == pytest.approx(end.battery_kw + end.flywheel_kw)
+    assert dr_seconds_to_full(dr.zoom, dr.required_kw) == DR_BATTERY_RAMP_S
 
 
 def test_dr_result_carries_contract_and_metrics_fields():

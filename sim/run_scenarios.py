@@ -129,7 +129,9 @@ class DrResult:
 
     ``site_load_kw`` is the Headroom site load in the DR start slot before
     storage and ``required_kw = max(0, site_load_kw − cap_kw)`` the storage
-    output the Event_Zoom delivers.
+    output the Event_Zoom delivers, taken from the zoom itself (battery +
+    flywheel in its last entry) so it carries the zoom's deci-kW rounding:
+    the load rounded to 0.1 kW and the cap floored to 0.1 kW (DECISIONS.md).
     """
 
     start: datetime
@@ -223,7 +225,7 @@ def build_dr(inp: ScenarioInputs, head: PolicyResult) -> DrResult:
         requested_shed_kw=inp.requested_shed_kw,
         cap_kw=inp.cap_kw,
         site_load_kw=load,
-        required_kw=max(0.0, load - inp.cap_kw),
+        required_kw=zoom[-1].battery_kw + zoom[-1].flywheel_kw,
         zoom=tuple(zoom),
     )
 

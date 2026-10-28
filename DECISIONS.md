@@ -148,3 +148,31 @@ The entries below were seeded from the approved design before implementation sta
   5. The cut flags are read at call time from `sim.config`, so tests can switch them.
 - **Rationale:** These follow the design's flow. Building and serializing every scenario in memory before writing means a failure in `sun` leaves both existing files unchanged. A wall-clock `built_at` matches the brief's example value, and Requirement 16.13 excludes it from byte comparison.
 - **Affected component:** `sim/run_scenarios.py`.
+
+### 2026-10-27 19:33 MT: Checkpoint 10 deferral-rebound fix: arrival forecast in `planned`, then tuning
+
+- **Decision:**
+  1. **Logic change.** The headroom planner's `planned` array now includes the expected facility load of training jobs that have not arrived yet: `planned[s + j] = inference[s + j] + arrival_forecast_kw[j] + reservations`. `scheduler.arrival_forecast_kw` uses only the configured job process: the Poisson rate from `jobs.arrival_rate_per_hour`, the mean of `JOB_POWER_KW`, and the uniform stepped `JOB_DURATION_MIN` grid. Entry 0 is 0, because jobs arriving at slot `s` are already known. It rises to `IT_PEAK_KW × TRAINING_SHARE × PUE` (8,450 kW) after 48 slots, the longest job. No actual job, `D` value or future grid value is read (Requirement 11.4 holds, and the future-`NaN` demand test still passes). `price_run`, `planned_peak_kw` and `reserve` are unchanged. They now see the forecast through `planned`.
+  2. **Tuning** (`sim/config.py`, all ILLUSTRATIVE): `PEAK_TARGET_SCALE` 1.0 → 1.10 (`P0` 12,090 → 13,299 kW in both scenarios). `DEADLINE_COMFORT_MIN` 240 → 1,440. `DEADLINE_RISK_USD_PER_KWH` 0.10 → 0.30. `STRESS_DISCHARGE_KW` (2,000) and `DR_STORAGE_SUPPORT_KW` (1,500) are unchanged, because sweeping them (0/1,000/2,000 and 1,000/2,000) moved `usd_saved` by less than $600.
+  3. **Bug fix.** `DrResult.required_kw` now comes from the zoom's last entry (battery + flywheel). Before, it was `max(0, load − cap)` unrounded. The zoom rounds the load to 0.1 kW and floors the cap to 0.1 kW, so the two could differ by 0.1 kW. `metrics.dr_seconds_to_full` then raised "event zoom never reaches full battery output" (seen at R = 594 kW). It never showed before because R was 0 in both scenarios.
+- **Before → after** (real scenarios, seed 42):
+
+  | | peak before | peak after | sun before | sun after |
+  |---|---|---|---|---|
+  | whole-window peak, baseline → headroom (kW) | 14,769.8 → 22,563.7 | 14,769.8 → 13,299.0 | 14,705.8 → 17,346.5 | 14,705.8 → 13,680.8 |
+  | stress-hour max, baseline → headroom (kW) | 13,593.5 → 7,864.0 | 13,593.5 → 7,864.0 | 14,412.5 → 12,090.0 | 14,412.5 → 12,298.0 |
+  | `headroom_kw` | 5,729.5 | 5,729.5 | 2,322.5 | 2,114.5 |
+  | `usd_saved` | −137,695.68 | 29,333.50 | −45,075.17 | 19,896.15 |
+  | `co2_avoided_t` | 29.056 | 19.904 | 6.812 | 3.884 |
+  | `deadlines_met_pct` / `inference_sla_pct` | 100 / 100 | 100 / 100 | 100 / 100 | 100 / 100 |
+  | DR zoom `R` (kW) / `dr_seconds_to_full` | 0 / 0 | 1,426.1 / 20 | 0 / 0 | 919.0 / 20 |
+
+- **Rationale:** The rebound had two causes. First, the greedy priced every DEFER target against a future that held only inference and already-routed jobs, so slots that later arrivals would need looked free. Night-1 work moved into the next morning for small carbon savings, and new arrivals then pushed the peak up. Once `P` had risen, filling up to it cost nothing. Second, with a 240-minute comfort, a deferral paid no deadline penalty until it was within 4 h of `plan_deadline`. Jobs with deadlines clamped to the window end therefore piled into the final morning. Alternatives tried, all at the old knobs unless noted:
+  - **Arrival forecast alone:** peak `usd_saved` −62,948, sun −3,518. The sun stress-hour test failed (15,016 kW vs 14,413 kW).
+  - **Hard DEFER filter** (drop any target whose run would put a slot above `P`, the literal "cap DEFER" option): peak −127,291 without the forecast and −44,490 with it. When the filter removes every target, the job runs `GRID_NOW` immediately and raises the peak. With the forecast and `DEADLINE_COMFORT_MIN` 1,440 it raised `DrInfeasibleError` in sun slot 47 (2,320 kW needed, 1,877 kW available). Not adopted.
+  - **Pricing DEFER against `P` only** instead of `max(P, planned)`: with the forecast it reached peak −43,855 at the old knobs, still negative. With comfort 1,440 it gave about the same results as the current form (for example `P0` ×1.10: peak +4,572 vs +4,463, sun +23,021 vs +27,128), so the 17:49 marginal Demand_Charge_Risk entry stays.
+  - **Tuning without the forecast** (`P0` ×1.15, comfort 1,440): positive, but the sun stress margin fell to 510 kW. With risk 0.30 the peak scenario's window peak was 14,694 kW, only 76 kW under baseline.
+
+  The forecast plus the three knobs gave `usd_saved` > 0 in both scenarios at every `P0` scale from 1.00 to 1.20 (risk 0.30, comfort 1,440). The worst cases were peak +$6,465 at 1.20 and sun +$4,899 at 1.20, so 1.10 is not a knife edge. The higher deadline risk also keeps more jobs running at the DR start (the 1,500 kW DR budget then binds), so storage now carries part of the shed: R = 1,426 kW (peak) and 919 kW (sun), and the Event_Zoom shows the flywheel step and the 20 s battery ramp. The `pulp` LP fallback (Requirement 11.18) was not needed, because Requirement 23.6 passed before and after.
+- **Tests changed:** Three tie-break tests in `test_scheduler_headroom_unit.py` now set `DEADLINE_RISK_USD_PER_KWH = 0` through a fixture. DEFER finishes later than GRID_NOW and STORAGE_NOW, so with a 1,440-minute comfort a deadline penalty separates their costs, and an exact tie needs zero penalty. Two MOVE cost tests in `test_scheduler_move_unit.py` now include the design's deadline-risk term in the expected cost. Before, that term happened to be 0 with the old comfort. The peak-shave test in `test_scheduler_storage_unit.py` now sizes its jobs from `peak_target_kw`, so the load still sits between the battery rating and battery + flywheel above `P` for any `P0` scale. New tests cover `arrival_forecast_kw`, the forecast in the planned peak, and the `required_kw` rounding.
+- **Affected component:** `sim/scheduler.py` (`arrival_forecast_kw`, `_HeadroomPlanner.__init__`, `begin_slot`), `sim/config.py`, `sim/run_scenarios.py` (`build_dr`), `sim/tests/`.

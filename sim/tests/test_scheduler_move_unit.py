@@ -80,6 +80,19 @@ def best(cands):
     return min(cands, key=lambda x: (round(x.cost, 9), ROUTE_ORDER.index(x.route)))
 
 
+def deadline_pen(power_kw, remaining_min, finish_min, plan_deadline_min=N * c.SLOT_MINUTES):
+    """Design deadline-risk term: risk $/kWh × facility kWh × max(0, 1 − slack / comfort)."""
+    kwh = facility_kw(power_kw) * remaining_min / 60
+    slack = plan_deadline_min - finish_min
+    return c.DEADLINE_RISK_USD_PER_KWH * kwh * max(0.0, 1 - slack / c.DEADLINE_COMFORT_MIN)
+
+
+# The default job (arrival slot 1, 60 min, 1,440 min slack) has plan_deadline
+# 360 min (the window end); a move decided at slot 1 starts at slot 3 and
+# finishes at 3 × 15 + 60 = 105 min.
+MOVE_FINISH_MIN = 3 * c.SLOT_MINUTES + 60
+
+
 # --- Move chosen (Req 12.1, 12.2, 12.3, 12.6, 12.8)
 
 def test_move_chosen_when_alternate_region_is_cheaper_and_has_capacity():
@@ -109,9 +122,10 @@ def test_move_chosen_when_alternate_region_is_cheaper_and_has_capacity():
     moves = {m.region: m for m in jt.move_options}
     assert set(moves) == {"BPAT", "CISO"}
     kwh = SLOT_KWH * 4
-    for region, ci in ALT_CI.items():   # $75 once + alternate price + carbon × shadow
-        expected = c.MOVE_PENALTY_USD + kwh * (c.ALT_REGION_PRICE_PER_KWH
-                                               + ci * c.CARBON_SHADOW_USD_PER_T / 1e6)
+    for region, ci in ALT_CI.items():   # $75 once + alternate price + carbon × shadow + deadline risk
+        expected = (c.MOVE_PENALTY_USD
+                    + kwh * (c.ALT_REGION_PRICE_PER_KWH + ci * c.CARBON_SHADOW_USD_PER_T / 1e6)
+                    + deadline_pen(300, 60, MOVE_FINISH_MIN))
         assert math.isclose(moves[region].cost, expected)
         assert moves[region].target_slot == 3 and moves[region].peak_excess_kw == 0.0
     assert jt.route == MOVE_REGION and best(jt.candidates).region == "BPAT"
@@ -125,7 +139,8 @@ def test_penalty_does_not_scale_with_job_size():
         m = next(x for x in jt.move_options if x.region == "BPAT")
         energy = facility_kw(kw) * (c.ALT_REGION_PRICE_PER_KWH
                                     + ALT_CI["BPAT"] * c.CARBON_SHADOW_USD_PER_T / 1e6)
-        assert math.isclose(m.cost - energy, c.MOVE_PENALTY_USD)
+        assert math.isclose(m.cost - energy - deadline_pen(kw, 60, MOVE_FINISH_MIN),
+                            c.MOVE_PENALTY_USD)
 
 
 # --- Idle capacity (Req 12.5)

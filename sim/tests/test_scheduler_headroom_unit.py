@@ -18,6 +18,7 @@ from sim.scheduler import (
     ROUTE_ORDER,
     STORAGE_NOW,
     ScenarioInputs,
+    arrival_forecast_kw,
     facility_kw,
     peak_target_kw,
     run_baseline,
@@ -85,6 +86,30 @@ def test_peak_target_is_average_facility_load():
     expected = c.PEAK_TARGET_SCALE * c.PUE * (INFERENCE_IT_KW + c.IT_PEAK_KW * c.TRAINING_SHARE)
     assert math.isclose(peak_target_kw(inp), expected)
     assert run_headroom(inp, trace=True).trace.peak_target_kw == peak_target_kw(inp)
+
+
+def test_arrival_forecast_rises_from_zero_to_expected_training_load():
+    f = arrival_forecast_kw(192)
+    expected = c.IT_PEAK_KW * c.TRAINING_SHARE * c.PUE
+    longest = c.JOB_DURATION_MIN[1] // c.SLOT_MINUTES          # slots of the longest job
+    assert len(f) == 192 and f[0] == 0.0                         # arrivals at s are known
+    assert all(b >= a for a, b in zip(f, f[1:]))                 # more unseen arrivals, more load
+    assert all(math.isclose(x, expected) for x in f[longest:])   # steady state
+    assert f[longest - 1] < expected
+    assert len(arrival_forecast_kw(1)) == 1 and arrival_forecast_kw(1)[0] == 0.0
+
+
+def test_planned_load_includes_expected_arrivals(monkeypatch):
+    # A low P0 so the planned peak the first job is priced against is the
+    # planned array itself: flat inference plus the arrival forecast, which
+    # peaks at the last slot of the window.
+    from sim import scheduler
+    monkeypatch.setattr(scheduler, "PEAK_TARGET_SCALE", 0.5)
+    inp = make_inputs([job(arrival_slot=0)], two_phase_slots())
+    jt = run_headroom(inp, trace=True).trace.slots[0].jobs[0]
+    f = arrival_forecast_kw(N)
+    assert peak_target_kw(inp) < facility_kw(INFERENCE_IT_KW) + f[-1]
+    assert math.isclose(jt.planned_peak_kw, facility_kw(INFERENCE_IT_KW) + f[-1])
 
 
 def test_unit_cost_and_run_slots():
@@ -192,11 +217,23 @@ def _first_trace(res):
     return res.trace.slots[0].jobs[0]
 
 
+@pytest.fixture
+def no_deadline_risk(monkeypatch):
+    """Zero deadline-risk penalty, so routes that finish at different times can tie.
+
+    DEFER finishes later than GRID_NOW and STORAGE_NOW, so any non-zero
+    deadline penalty (``DEADLINE_COMFORT_MIN`` is 1,440 min, longer than this
+    window's 360) separates their costs. The tie-break rule is what is tested.
+    """
+    from sim import scheduler
+    monkeypatch.setattr(scheduler, "DEADLINE_RISK_USD_PER_KWH", 0.0)
+
+
 def _rounded(jt):
     return {cand.route: round(cand.cost, 9) for cand in jt.candidates}
 
 
-def test_three_way_tie_picks_grid_now():
+def test_three_way_tie_picks_grid_now(no_deadline_risk):
     res = run_headroom(make_inputs([job(arrival_slot=0)], _flat_slots()), trace=True)
     jt = _first_trace(res)
     costs = _rounded(jt)
@@ -204,7 +241,7 @@ def test_three_way_tie_picks_grid_now():
     assert jt.route == GRID_NOW
 
 
-def test_storage_beats_defer_on_a_tie():
+def test_storage_beats_defer_on_a_tie(no_deadline_risk):
     res = run_headroom(make_inputs([job(arrival_slot=0)], _flat_slots(first_price=0.2)), trace=True)
     jt = _first_trace(res)
     costs = _rounded(jt)
@@ -212,7 +249,7 @@ def test_storage_beats_defer_on_a_tie():
     assert jt.route == STORAGE_NOW
 
 
-def test_grid_beats_defer_on_a_tie_when_storage_is_excluded():
+def test_grid_beats_defer_on_a_tie_when_storage_is_excluded(no_deadline_risk):
     inp = make_inputs([job(arrival_slot=0)], _flat_slots(), dr_start=0, dr_slots=2)
     jt = _first_trace(run_headroom(inp, trace=True))
     costs = _rounded(jt)

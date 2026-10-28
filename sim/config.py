@@ -92,10 +92,10 @@ DEMAND_CHARGE_PER_KW = 18.0                # ILLUSTRATIVE
 CARBON_SHADOW_USD_PER_T = 50.0             # ILLUSTRATIVE
 
 # --- Scheduler cost knobs
-DEADLINE_RISK_USD_PER_KWH = 0.10           # ILLUSTRATIVE
-DEADLINE_COMFORT_MIN = 240                 # ILLUSTRATIVE
+DEADLINE_RISK_USD_PER_KWH = 0.30           # ILLUSTRATIVE (tuned at checkpoint 10; was 0.10)
+DEADLINE_COMFORT_MIN = 1440                # ILLUSTRATIVE (tuned at checkpoint 10; was 240)
 DEFER_TARGET_STEP_SLOTS = 4                # ILLUSTRATIVE: candidate resume slots on the hour
-PEAK_TARGET_SCALE = 1.0                    # ILLUSTRATIVE: multiplier on the initial planned peak P0 (tuning knob)
+PEAK_TARGET_SCALE = 1.10                   # ILLUSTRATIVE: multiplier on the initial planned peak P0 (tuned at checkpoint 10; was 1.0)
 
 # --- Demand response
 DR_SHED_KW = 4000                          # ILLUSTRATIVE

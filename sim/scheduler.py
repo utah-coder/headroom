@@ -54,6 +54,9 @@ from sim.config import (
     DR_STORAGE_SUPPORT_KW,
     FLYWHEEL,
     IT_PEAK_KW,
+    JOB_DURATION_MIN,
+    JOB_DURATION_STEP_MIN,
+    JOB_POWER_KW,
     LOOKAHEAD_SLOTS,
     MOVE_DELAY_SLOTS,
     MOVE_PENALTY_USD,
@@ -68,7 +71,7 @@ from sim.config import (
     TRAINING_SHARE,
 )
 from sim.grid import GridSlot, stress_flags
-from sim.jobs import TrainingJob
+from sim.jobs import TrainingJob, arrival_rate_per_hour
 from sim.site import DrInfeasibleError, StorageSpec, StorageState
 from sim.timeutil import hhmm_denver, iso_z
 
@@ -108,6 +111,7 @@ __all__ = [
     "run_baseline",
     "peak_target_kw",
     "unit_cost_per_kwh",
+    "arrival_forecast_kw",
     "forecast_stress",
     "run_slots",
     "RouteCandidate",
@@ -656,6 +660,30 @@ def peak_target_kw(inp: ScenarioInputs) -> float:
     return PEAK_TARGET_SCALE * PUE * (mean_inference_it + IT_PEAK_KW * TRAINING_SHARE)
 
 
+def arrival_forecast_kw(n_slots: int) -> np.ndarray:
+    """Expected facility kW of training jobs that have not arrived yet, by look-ahead lag.
+
+    Entry ``j`` is the expected load in slot ``s + j`` from jobs arriving in
+    slots ``s + 1 … s + j`` (jobs arriving at ``s`` are already known, so
+    entry 0 is 0). It uses only the configured job process (Requirement 10.4):
+    Poisson arrivals at ``arrival_rate_per_hour``, mean power, and the uniform
+    stepped duration grid, with each job running ``min(15, remaining)``
+    minutes per slot from its arrival. It rises to the expected training load
+    ``IT_PEAK_KW × TRAINING_SHARE × PUE`` once the lag exceeds the longest
+    duration. No actual job, demand or future grid value is read (DECISIONS.md).
+    """
+    lo, hi = JOB_DURATION_MIN
+    durations = np.arange(lo, hi + 1, JOB_DURATION_STEP_MIN, dtype=float)
+    mean_power_kw = sum(JOB_POWER_KW) / 2
+    rate_per_slot = arrival_rate_per_hour() / SLOTS_PER_HOUR
+    lags = np.arange(max(0, n_slots - 1), dtype=float)
+    # Mean minutes a job runs in its (i+1)-th slot after arrival, i = 0, 1, …
+    used = np.clip(durations[None, :] - SLOT_MINUTES * lags[:, None], 0, SLOT_MINUTES).mean(axis=1)
+    out = np.zeros(n_slots)
+    out[1:] = PUE * rate_per_slot * mean_power_kw * np.cumsum(used) / SLOT_MINUTES
+    return out
+
+
 def unit_cost_per_kwh(slot: GridSlot) -> float:
     """``price + carbon × CARBON_SHADOW_USD_PER_T / 1e6`` in $/kWh (design)."""
     return slot.price_per_kwh + slot.carbon_g_per_kwh * CARBON_SHADOW_USD_PER_T / _G_PER_T
@@ -797,7 +825,8 @@ class _HeadroomPlanner:
     """Per-run state of the greedy Headroom_Policy.
 
     Planning inputs for slots after the current one are PACE ``DF``, carbon
-    intensity and the tariff only (Requirement 11.4). PACE ``D`` is read in
+    intensity and the tariff only (Requirement 11.4), plus the expected load
+    of jobs not yet arrived (``arrival_forecast_kw``, from config). PACE ``D`` is read in
     ``run_headroom`` solely for the reason-string demand percentile, a
     reporting value that Requirement 13.4 defines over all N slots; it never
     reaches the cost or candidate code below.
@@ -821,6 +850,9 @@ class _HeadroomPlanner:
         self.inference_fac = inp.inference_fac
         self.base = np.array(self.inference_fac, dtype=float)
         self.planned = self.base.copy()         # forecast on-site grid kW per slot
+        # Expected load of jobs that have not arrived yet, by lag from the
+        # current slot; added to ``planned`` at every slot (DECISIONS.md).
+        self.arrivals = arrival_forecast_kw(self.n)
         self.unit_cost = np.array([unit_cost_per_kwh(g) for g in inp.slots], dtype=float)
         self.eff_cost = self.unit_cost.copy()
         self.move_enabled = move_enabled
@@ -872,8 +904,10 @@ class _HeadroomPlanner:
         self.fstress = tuple(forecast_stress(self.inp.slots, range(s, self.h_end)))
         # Release every reservation from slot s on. Only runnable jobs hold
         # reservations there, and each is re-added as it is routed below, so
-        # resetting to inference is the release step without float drift.
-        self.planned[s:] = self.base[s:]
+        # resetting to inference plus the expected load of jobs arriving
+        # after s is the release step without float drift. The arrival term
+        # keeps deferred work from booking room that later arrivals will need.
+        self.planned[s:] = self.base[s:] + self.arrivals[:self.n - s]
         # Slots past H (possible only when H is a full 24 h) are priced with a
         # 24-hour persistence forecast from inside H, so every route is priced
         # over the same work without reading data beyond the look-ahead.
