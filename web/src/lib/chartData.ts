@@ -82,9 +82,9 @@ function niceRange(lo: number, hi: number, step: number): { domain: [number, num
   return { domain: [min, max], ticks };
 }
 
-/** A tick step from {1, 2, 5} × 10^k giving at most ~8 intervals. */
-function niceStep(span: number): number {
-  const raw = Math.max(span, 1) / 8;
+/** A tick step from {1, 2, 5} × 10^k giving at most ~`intervals` intervals. */
+function niceStep(span: number, intervals = 8): number {
+  const raw = Math.max(span, 1) / intervals;
   const mag = 10 ** Math.floor(Math.log10(raw));
   for (const m of [1, 2, 5, 10]) if (m * mag >= raw) return m * mag;
   return 10 * mag;
@@ -105,6 +105,24 @@ export function kwAxis(rows: readonly ChartRow[]): { domain: [number, number]; t
     hi = Math.max(hi, pos, r.baseline_kw, r.headroom_kw);
   }
   return niceRange(lo, hi, niceStep(hi - lo));
+}
+
+/**
+ * Zoom_Panel kW axis. Computed from all Event_Zoom entries and the cap, so
+ * the axis stays fixed while playback draws one more entry per frame.
+ */
+export function zoomKwAxis(
+  zoom: ReadonlyArray<{ grid_kw: number; flywheel_kw: number; battery_kw: number }>,
+  capKw: number,
+): { domain: [number, number]; ticks: number[] } {
+  let lo = Math.min(0, capKw);
+  let hi = Math.max(0, capKw);
+  for (const z of zoom) {
+    lo = Math.min(lo, z.grid_kw, z.flywheel_kw, z.battery_kw);
+    hi = Math.max(hi, z.grid_kw, z.flywheel_kw, z.battery_kw);
+  }
+  // About 5 intervals: the zoom plot is short, and denser labels get dropped.
+  return niceRange(lo, hi, niceStep(hi - lo, 5));
 }
 
 /** Right (MW) axis range for PACE demand. */

@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useReducer, useState, type ReactNode } from 'react';
 import { DecisionLog } from './components/DecisionLog';
+import { DrPanel } from './components/DrPanel';
 import ErrorBanner from './components/ErrorBanner';
 import { Footer } from './components/Footer';
 import Header from './components/Header';
 import { KpiRow } from './components/KpiRow';
 import { MainChart } from './components/MainChart';
+import { ANIMATED_ZOOM } from './config';
 import { loadScenarios, type Loaded } from './data/loadScenarios';
+import { useReducedMotion } from './lib/useReducedMotion';
 import { initialState, reducer, type Mode } from './state/appState';
 import type { ScenarioName } from './types';
 
@@ -37,6 +40,14 @@ export default function App() {
     [],
   );
   const onModeChange = useCallback((mode: Mode) => dispatch({ type: 'setMode', mode }), []);
+
+  // Reduced motion or a cut animation shows the static zoom at once
+  // (Requirements 20.7, 20.8, 24.9). The reducer ignores fireDr in Baseline
+  // and while playing (20.2, 20.9).
+  const reducedMotion = useReducedMotion();
+  const instantDr = reducedMotion || !ANIMATED_ZOOM;
+  const onFireDr = useCallback(() => dispatch({ type: 'fireDr', instant: instantDr }), [instantDr]);
+  const onDrDone = useCallback(() => dispatch({ type: 'drComplete' }), []);
 
   if (loaded === null) {
     return (
@@ -86,8 +97,16 @@ export default function App() {
           <MainChart scenario={scenario} mode={mode} />
         </div>
         <div data-area="side" className="flex min-w-0 flex-col gap-4">
-          {/* Task 14.2 replaces this slot with DrPanel and ZoomPanel. */}
-          <Placeholder name="Demand-response button and zoom (task 14.2)" className="min-h-48" />
+          {/* drComplete (or an instant fire) sets dr = 'done', which shows the KPI
+              DR strip and lists DR_Event decisions first (Requirements 20.5, 20.6). */}
+          <DrPanel
+            scenario={scenario}
+            mode={mode}
+            dr={dr}
+            drRun={state.drRun}
+            onFire={onFireDr}
+            onDone={onDrDone}
+          />
           <DecisionLog scenario={scenario} mode={mode} dr={dr} />
         </div>
       </main>
@@ -102,16 +121,5 @@ function StatusScreen({ children }: { children: ReactNode }) {
       <h1 className="text-3xl font-semibold tracking-tight text-slate-100">Headroom</h1>
       {children}
     </main>
-  );
-}
-
-// Temporary grid-area marker for the DR slot; task 14.2 replaces it.
-function Placeholder({ name, className = '' }: { name: string; className?: string }) {
-  return (
-    <div
-      className={`flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-900 text-sm text-slate-400 ${className}`}
-    >
-      {name}
-    </div>
   );
 }
