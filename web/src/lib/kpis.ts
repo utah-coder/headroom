@@ -55,7 +55,7 @@ export function selectKpis(scenario: Scenario, mode: Mode, dr: DrPhase): KpiSele
       id: 'headroom_kw',
       label: 'Headroom returned (stress hours)',
       value: formatKw(m.headroom_kw),
-      note: headroom ? 'grid capacity freed at the grid’s busiest' : 'baseline is the reference point',
+      note: headroom ? 'grid capacity freed at the grid’s busiest hours' : 'baseline is the reference point',
     },
     {
       id: 'usd_saved',
