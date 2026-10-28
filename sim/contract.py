@@ -249,8 +249,15 @@ def _target(target: Any) -> Any:
     return iso_z(target) if isinstance(target, datetime) else target
 
 
+# Option costs go through np.dot (BLAS), whose summation order depends on the
+# CPU kernel, so the same build differs by a few ulps between machines. Many
+# parts sit exactly on a half cent (kWh × a 4-decimal tariff), where that noise
+# decides the cent. Rounding to 1e-9 first removes the noise (DECISIONS.md).
+_STABLE_DIGITS = 9
+
+
 def _usd(x: float) -> float:
-    return q(x, ROUND["usd"])
+    return q(q(x, _STABLE_DIGITS), ROUND["usd"])
 
 
 def _option(o: Any) -> dict[str, Any]:

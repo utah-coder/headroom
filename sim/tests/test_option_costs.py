@@ -17,6 +17,7 @@ import hashlib
 import json
 from typing import Any
 
+import numpy as np
 import pytest
 
 from sim.contract import OPTION_COST_PARTS, dumps
@@ -119,6 +120,26 @@ def test_chosen_is_the_cheapest_offered_option(name, builds):
         best = min(offered, key=lambda o: (round(o.total_usd, _COST_DIGITS),
                                            ROUTE_ORDER.index(o.route)))
         assert best.route == d.route, d
+
+
+def test_option_cents_survive_blas_noise(builds, monkeypatch):
+    # np.dot sums in a CPU-dependent order, so CI (Linux) and a Windows build
+    # differ by a few ulps. Nudging every dot product by one ulp must not
+    # change a single cent in either file.
+    real_dot = np.dot
+    monkeypatch.setattr(np, "dot", lambda a, b: np.nextafter(real_dot(a, b), np.inf))
+    with pytest.MonkeyPatch.context() as mp:
+        block_network(mp)
+        data = load_grid_data()
+        for name in SCENARIOS:
+            noisy = build_scenario_full(name, data, built_at=_BUILT_AT).doc
+            # Compare per-decision options, not the whole one-line file: a
+            # failing string compare would make pytest diff ~300 kB.
+            got = [d["options"] for d in noisy["decisions"]]
+            want = [d["options"] for d in builds[name].doc["decisions"]]
+            bad = [i for i, (g, w) in enumerate(zip(got, want)) if g != w]
+            assert len(got) == len(want) and not bad, f"{name}: options differ in decisions {bad[:10]}"
+            assert dumps(noisy) == dumps(builds[name].doc), f"{name}: file differs outside options"
 
 
 def _pre_feature_view(doc: dict[str, Any]) -> dict[str, Any]:
