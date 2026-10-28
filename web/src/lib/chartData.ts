@@ -15,6 +15,7 @@ export interface ChartRow {
   pace_mw: number;
   baseline_kw: number;
   headroom_kw: number;
+  naive_kw: number;
   grid_kw: number;
   battery_kw: number;
   flywheel_kw: number;
@@ -25,11 +26,13 @@ export function buildRows(s: Scenario): ChartRow[] {
   return s.grid.map((g, i) => {
     const h = s.headroom[i];
     const b = s.baseline[i];
+    const nv = s.naive[i];
     return {
       x: i + 0.5,
       pace_mw: g.pace_demand_mw,
       baseline_kw: b.grid_kw,
       headroom_kw: h.grid_kw,
+      naive_kw: nv.grid_kw,
       grid_kw: h.grid_kw,
       battery_kw: h.battery_kw,
       flywheel_kw: h.flywheel_kw,
@@ -91,18 +94,20 @@ function niceStep(span: number, intervals = 8): number {
 }
 
 /**
- * Left (kW) axis range. Covers both modes so the axis does not jump when the
- * presenter toggles Baseline ↔ Headroom; the bottom reaches below zero when
- * storage charges (stackOffset="sign" stacks charging below the axis).
+ * Left (kW) axis range. Covers Baseline and Headroom so the axis does not jump
+ * when the presenter toggles between them; the bottom reaches below zero when
+ * storage charges (stackOffset="sign" stacks charging below the axis). The
+ * cheapest-hour line, at more than twice the baseline peak, is included only
+ * in that mode, so the other two keep a readable scale (DECISIONS.md).
  */
-export function kwAxis(rows: readonly ChartRow[]): { domain: [number, number]; ticks: number[] } {
+export function kwAxis(rows: readonly ChartRow[], withNaive = false): { domain: [number, number]; ticks: number[] } {
   let lo = 0;
   let hi = 0;
   for (const r of rows) {
     const neg = Math.min(0, r.grid_kw) + Math.min(0, r.battery_kw) + Math.min(0, r.flywheel_kw) + Math.min(0, r.moved_kw);
     const pos = Math.max(0, r.grid_kw) + Math.max(0, r.battery_kw) + Math.max(0, r.flywheel_kw) + Math.max(0, r.moved_kw);
     lo = Math.min(lo, neg);
-    hi = Math.max(hi, pos, r.baseline_kw, r.headroom_kw);
+    hi = Math.max(hi, pos, r.baseline_kw, r.headroom_kw, withNaive ? r.naive_kw : 0);
   }
   return niceRange(lo, hi, niceStep(hi - lo));
 }
@@ -188,6 +193,12 @@ const SCENARIO_LABEL: Record<Scenario['meta']['scenario'], string> = {
   sun: 'Sunny day',
 };
 
+const MODE_LABEL: Record<Mode, string> = {
+  baseline: 'Baseline',
+  naive: 'Cheapest hour',
+  headroom: 'Headroom',
+};
+
 const mwFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 /** Text summary for the chart's role="img" aria-label. */
@@ -196,14 +207,17 @@ export function chartAriaLabel(s: Scenario, mode: Mode): string {
   const maxOf = (f: (r: ChartRow) => number) => (rows.length ? Math.max(...rows.map(f)) : 0);
   const baselinePeak = maxOf((r) => r.baseline_kw);
   const headroomPeak = maxOf((r) => r.headroom_kw);
+  const naivePeak = maxOf((r) => r.naive_kw);
   const pacePeak = maxOf((r) => r.pace_mw);
   const runs = stressRuns(s.grid).length;
   const first = s.grid.length ? hhmmDenver(s.grid[0].t) : '';
   const parts = [
-    `Site grid draw over ${s.grid.length} 15-minute slots from ${first} Denver time, ${SCENARIO_LABEL[s.meta.scenario]} scenario, ${mode === 'headroom' ? 'Headroom' : 'Baseline'} mode.`,
+    `Site grid draw over ${s.grid.length} 15-minute slots from ${first} Denver time, ${SCENARIO_LABEL[s.meta.scenario]} scenario, ${MODE_LABEL[mode]} mode.`,
     mode === 'headroom'
       ? `Headroom grid draw peaks at ${formatKw(headroomPeak)} against a baseline peak of ${formatKw(baselinePeak)}, with grid, battery, flywheel and moved load stacked.`
-      : `Baseline grid draw peaks at ${formatKw(baselinePeak)}.`,
+      : mode === 'naive'
+        ? `Cheapest-hour grid draw peaks at ${formatKw(naivePeak)} against a baseline peak of ${formatKw(baselinePeak)}.`
+        : `Baseline grid draw peaks at ${formatKw(baselinePeak)}.`,
     `PACE demand peaks at ${mwFormat.format(Math.round(pacePeak))} MW.`,
     `${runs} grid stress ${runs === 1 ? 'period is' : 'periods are'} shaded.`,
   ];

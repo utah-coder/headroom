@@ -43,6 +43,7 @@ _PATHS: dict[str, tuple[Any, ...]] = {
     "DrEvent": ("dr_event",),
     "ZoomPoint": ("dr_event", "zoom", 0),
     "Metrics": ("metrics",),
+    "NaiveMetrics": ("naive_metrics",),
 }
 _EXTRA_KEY = "zz_not_in_contract"
 

@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import type { Decision, Scenario } from '../types';
 import type { DrPhase, Mode } from '../state/appState';
-import { hhmmDenver } from '../lib/time';
+import { formatKw } from '../lib/format';
+import { hhmmDenver, weekdayDenver } from '../lib/time';
 import { decisionKey, orderDecisions } from '../lib/orderDecisions';
 import { OptionBreakdown } from './OptionBreakdown';
 import { RouteChip, RouteGlossary } from './RouteChip';
@@ -20,6 +21,18 @@ interface Props {
 }
 
 const BASELINE_TEXT = 'Baseline: every job runs on arrival from the grid.';
+
+/** Cheapest hour records no decisions; one paragraph says what happened instead. */
+function naiveText({ naive, naive_metrics: nm }: Scenario): string {
+  const peak = naive.reduce((best, r) => (r.grid_kw > best.grid_kw ? r : best), naive[0]);
+  return (
+    'No coordination: each job picked its own cheapest, cleanest start. ' +
+    `${nm.peak_jobs_running} jobs were running at once at ${hhmmDenver(peak.t)} on ${weekdayDenver(peak.t)}, ` +
+    `against ${nm.baseline_jobs_running} at that moment today. ` +
+    `Held to today’s ${formatKw(nm.cap_kw)} connection instead, ${nm.capped_missed} of ${nm.capped_total} jobs ` +
+    'would miss their deadline.'
+  );
+}
 const EMPTY_TEXT = 'No decisions for this scenario.';
 
 /** DEFER targets are slot times (shown in Denver HH:MM); MOVE_REGION targets are regions. */
@@ -96,6 +109,8 @@ export function DecisionLog({ scenario, mode, dr, openKey, onToggle }: Props) {
         <RouteGlossary />
       </div>
     );
+  } else if (mode === 'naive') {
+    body = <p className="text-sm text-slate-300">{naiveText(scenario)}</p>;
   } else if (ordered.length === 0) {
     body = <p className="text-sm text-slate-300">{EMPTY_TEXT}</p>;
   } else {

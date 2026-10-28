@@ -71,6 +71,8 @@ __all__ = [
     "ZOOM_KEYS",
     "METRICS_KEYS",
     "PCT_METRICS",
+    "NAIVE_KEYS",
+    "NAIVE_METRICS_KEYS",
     "INTERFACE_KEYS",
     "DrLike",
     "q",
@@ -91,7 +93,8 @@ ZOOM_SECONDS: int = DR_ZOOM_SECONDS                          # 600
 UNITS: str = f"facility kW (IT × PUE {PUE})"
 
 TOP_KEYS: tuple[str, ...] = (
-    "meta", "grid", "baseline", "headroom", "decisions", "dr_event", "metrics",
+    "meta", "grid", "baseline", "headroom", "naive", "decisions", "dr_event", "metrics",
+    "naive_metrics",
 )
 META_KEYS: tuple[str, ...] = ("scenario", "window", "seed", "built_at", "sources", "params")
 SOURCES: Mapping[str, str] = MappingProxyType({
@@ -112,6 +115,7 @@ GRID_KEYS: tuple[str, ...] = (
 )
 BASELINE_KEYS: tuple[str, ...] = ("t", "grid_kw", "inference_kw", "training_kw")
 HEADROOM_KEYS: tuple[str, ...] = BASELINE_KEYS + ("battery_kw", "flywheel_kw", "soc_pct", "moved_kw")
+NAIVE_KEYS: tuple[str, ...] = BASELINE_KEYS                  # cheapest hour: same row shape
 DECISION_KEYS: tuple[str, ...] = ("t", "job", "route", "target", "reason", "options")
 # One priced route per decisions[].options entry; the six *_usd parts add up to total_usd.
 OPTION_COST_PARTS: tuple[str, ...] = (
@@ -123,8 +127,17 @@ ZOOM_KEYS: tuple[str, ...] = ("s", "grid_kw", "flywheel_kw", "battery_kw")
 METRICS_KEYS: tuple[str, ...] = (
     "headroom_kw", "usd_saved", "co2_avoided_t", "deadlines_met_pct",
     "inference_sla_pct", "dr_delivered_pct", "dr_seconds_to_full",
+    "baseline_site_peak_kw", "headroom_site_peak_kw",
 )
 PCT_METRICS: tuple[str, ...] = tuple(k for k in METRICS_KEYS if k.endswith("_pct"))
+NAIVE_METRICS_KEYS: tuple[str, ...] = (
+    "site_peak_kw", "stress_peak_kw", "usd_saved", "co2_avoided_t", "deadlines_met_pct",
+    "peak_hour_starts", "peak_jobs_running", "baseline_jobs_running",
+    "capped_missed", "capped_total", "cap_kw",
+)
+_NAIVE_COUNTS: tuple[str, ...] = (
+    "peak_hour_starts", "peak_jobs_running", "baseline_jobs_running", "capped_missed", "capped_total",
+)
 
 # Key sets by the interface name they have in web/src/types.ts (Requirement 16.12).
 INTERFACE_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
@@ -139,6 +152,7 @@ INTERFACE_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "DrEvent": DR_EVENT_KEYS,
     "ZoomPoint": ZOOM_KEYS,
     "Metrics": METRICS_KEYS,
+    "NaiveMetrics": NAIVE_METRICS_KEYS,
 })
 
 _SLOT = timedelta(minutes=SLOT_MINUTES)
@@ -153,6 +167,12 @@ _METRIC_ROUND: Mapping[str, str] = MappingProxyType({
     "deadlines_met_pct": "pct",
     "inference_sla_pct": "pct",
     "dr_delivered_pct": "pct",
+    "baseline_site_peak_kw": "kw",
+    "headroom_site_peak_kw": "kw",
+    # naive_metrics
+    "site_peak_kw": "kw",
+    "stress_peak_kw": "kw",
+    "cap_kw": "kw",
 })
 
 
@@ -273,6 +293,19 @@ def _option(o: Any) -> dict[str, Any]:
     return out
 
 
+def _plain_series(res: "PolicyResult") -> list[dict[str, Any]]:
+    """``baseline`` / ``naive`` rows: grid, inference and training kW per slot."""
+    return [
+        {
+            "t": iso_z(r.t),
+            "grid_kw": _kw(r.grid_kw),
+            "inference_kw": _kw(r.inference_kw),
+            "training_kw": _kw(r.training_kw),
+        }
+        for r in res.slots
+    ]
+
+
 def build_doc(
     name: str,
     inp: "ScenarioInputs",
@@ -282,11 +315,15 @@ def build_doc(
     metrics: Any,
     built_at: str | datetime,
     params: Mapping[str, Any],
+    *,
+    naive: "PolicyResult",
+    naive_metrics: Any,
 ) -> dict[str, Any]:
     """The Scenario_File object for one scenario, in contract key order.
 
     ``metrics`` is ``metrics.compute``'s result, as a mapping or an object with
-    the ``METRICS_KEYS`` attributes. ``meta.window`` is the first slot start and
+    the ``METRICS_KEYS`` attributes; ``naive`` and ``naive_metrics`` are the
+    cheapest-hour run and ``metrics.compute_naive``'s result. ``meta.window`` is the first slot start and
     the start plus N slots (48 hours for N = 192, Requirement 9.5). Decisions
     are sorted stably by ``t`` (Requirement 16.8). Nothing is clamped or
     checked here; ``validate`` reports any contract violation.
@@ -315,15 +352,7 @@ def build_doc(
         }
         for s in inp.slots
     ]
-    baseline = [
-        {
-            "t": iso_z(r.t),
-            "grid_kw": _kw(r.grid_kw),
-            "inference_kw": _kw(r.inference_kw),
-            "training_kw": _kw(r.training_kw),
-        }
-        for r in base.slots
-    ]
+    baseline = _plain_series(base)
     headroom = [
         {
             "t": iso_z(r.t),
@@ -367,15 +396,21 @@ def build_doc(
     for key in METRICS_KEYS:
         v = _get(metrics, key)
         out_metrics[key] = int(v) if key == "dr_seconds_to_full" else q(v, ROUND[_METRIC_ROUND[key]])
+    out_naive_metrics: dict[str, Any] = {}
+    for key in NAIVE_METRICS_KEYS:
+        v = _get(naive_metrics, key)
+        out_naive_metrics[key] = int(v) if key in _NAIVE_COUNTS else q(v, ROUND[_METRIC_ROUND[key]])
 
     return {
         "meta": meta,
         "grid": grid,
         "baseline": baseline,
         "headroom": headroom,
+        "naive": _plain_series(naive),
         "decisions": decisions,
         "dr_event": dr_event,
         "metrics": out_metrics,
+        "naive_metrics": out_naive_metrics,
     }
 
 
@@ -735,6 +770,23 @@ def _check_metrics(c: _Checker, metrics: Any) -> None:
             c.number(metrics, k, "metrics")
 
 
+def _check_naive_metrics(c: _Checker, m: Any) -> None:
+    """``naive_metrics`` (DECISIONS.md, "Cheapest hour")."""
+    if not c.obj(m, "naive_metrics", NAIVE_METRICS_KEYS):
+        return
+    for k in NAIVE_METRICS_KEYS:
+        if k in _NAIVE_COUNTS:
+            if k in m and (not isinstance(m[k], int) or isinstance(m[k], bool) or m[k] < 0):
+                c.err(f"naive_metrics.{k}", f"expected a non-negative integer, got {m[k]!r}")
+        elif k == "deadlines_met_pct":
+            c.number(m, k, "naive_metrics", 0, 100)
+        else:
+            c.number(m, k, "naive_metrics")
+    missed, total = m.get("capped_missed"), m.get("capped_total")
+    if isinstance(missed, int) and isinstance(total, int) and missed > total:
+        c.err("naive_metrics.capped_missed", f"{missed} is more than capped_total {total}")
+
+
 def validate(doc: Any, *, n_slots: int | None = N_SLOTS,
              scenario: str | None = None) -> list[str]:
     """Every Output_Contract violation in ``doc`` (Requirements 9.5, 16.2–16.11).
@@ -758,12 +810,16 @@ def validate(doc: Any, *, n_slots: int | None = N_SLOTS,
         _check_series(c, doc["baseline"], "baseline", BASELINE_KEYS, grid_t, n)
     if "headroom" in doc:
         _check_series(c, doc["headroom"], "headroom", HEADROOM_KEYS, grid_t, n)
+    if "naive" in doc:
+        _check_series(c, doc["naive"], "naive", NAIVE_KEYS, grid_t, n)
     if "decisions" in doc:
         _check_decisions(c, doc["decisions"], w0, w1)
     if "dr_event" in doc:
         _check_dr(c, doc["dr_event"], w0, w1)
     if "metrics" in doc:
         _check_metrics(c, doc["metrics"])
+    if "naive_metrics" in doc:
+        _check_naive_metrics(c, doc["naive_metrics"])
     return c.errors
 
 

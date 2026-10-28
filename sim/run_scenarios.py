@@ -66,13 +66,14 @@ from sim.grid import (
     write_processed,
 )
 from sim.jobs import generate
-from sim.metrics import Metrics, compute
+from sim.metrics import Metrics, NaiveMetrics, compute, compute_naive
 from sim.scheduler import (
     PolicyResult,
     ScenarioInputs,
     peak_target_kw,
     run_baseline,
     run_headroom,
+    run_naive,
 )
 from sim.site import (
     DrInfeasibleError,
@@ -236,7 +237,7 @@ def _utc_now() -> str:
 
 @dataclass(frozen=True)
 class ScenarioBuild:
-    """One scenario's pipeline objects: the inputs, both policy runs, the
+    """One scenario's pipeline objects: the inputs, the three policy runs, the
     DR_Event, the metrics and the validated Scenario_File object."""
 
     inp: ScenarioInputs
@@ -245,6 +246,8 @@ class ScenarioBuild:
     dr: DrResult
     metrics: Metrics
     doc: dict[str, Any]
+    naive: PolicyResult
+    naive_metrics: NaiveMetrics
 
 
 def build_scenario(name: str, cache: GridData | Mapping[str, Sequence[Mapping]] | None = None,
@@ -300,6 +303,8 @@ def build_scenario_full(name: str,
         raise
     dr = build_dr(inp, head)
     metrics = compute(inp, base, head, dr)
+    naive = run_naive(inp)
+    naive_metrics = compute_naive(inp, base, naive)
     if metrics.inference_sla_pct < _SLA_PCT:
         raise ScenarioError(name, f"inference_sla_pct is {metrics.inference_sla_pct}, "
                                   f"must be {_SLA_PCT:g}")
@@ -308,13 +313,14 @@ def build_scenario_full(name: str,
         "filled_hours": grid.filled_hours,
         "peak_target_kw": peak_target_kw(inp),
         "enable_move_region": bool(config.ENABLE_MOVE_REGION),
-    })
+    }, naive=naive, naive_metrics=naive_metrics)
     errors = validate(doc, scenario=name)
     if errors:
         shown = "; ".join(errors[:_MAX_ERRORS_SHOWN])
         more = f" (+{len(errors) - _MAX_ERRORS_SHOWN} more)" if len(errors) > _MAX_ERRORS_SHOWN else ""
         raise ScenarioError(name, f"Output_Contract violations: {shown}{more}")
-    return ScenarioBuild(inp=inp, base=base, head=head, dr=dr, metrics=metrics, doc=doc)
+    return ScenarioBuild(inp=inp, base=base, head=head, dr=dr, metrics=metrics, doc=doc,
+                         naive=naive, naive_metrics=naive_metrics)
 
 
 def _write_all(files: Mapping[Path, str], remove: Sequence[Path] = ()) -> None:
@@ -351,7 +357,8 @@ def _summary(doc: Mapping[str, Any]) -> str:
             f"{meta['params']['job_count']} jobs, {len(doc['decisions'])} decisions, "
             f"DR {dr['start']} cap {dr['cap_kw']} kW\n"
             "  " + ", ".join(f"{k}={v}" for k, v in m.items())
-            + f", dr_delivered_raw_pct={meta['params']['dr_delivered_raw_pct']}")
+            + f", dr_delivered_raw_pct={meta['params']['dr_delivered_raw_pct']}\n"
+            "  cheapest hour: " + ", ".join(f"{k}={v}" for k, v in doc["naive_metrics"].items()))
 
 
 def main(out_dir: Path | str | None = None, *, processed_dir: Path | str | None = None,

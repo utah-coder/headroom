@@ -21,9 +21,11 @@ const TOP_LEVEL_KEYS = [
   'grid',
   'baseline',
   'headroom',
+  'naive',
   'decisions',
   'dr_event',
   'metrics',
+  'naive_metrics',
 ] as const;
 
 const GRID_LENGTH = 192;

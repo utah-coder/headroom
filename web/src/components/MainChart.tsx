@@ -13,6 +13,7 @@ import {
 import type { IsoUtc, Scenario } from '../types';
 import type { Mode } from '../state/appState';
 import { ROUTE_COLORS, SLATE } from '../lib/colors';
+import { formatKw } from '../lib/format';
 import {
   buildRows,
   chartAriaLabel,
@@ -34,6 +35,7 @@ type PatternKind = 'diagonal' | 'cross' | 'dots' | 'vertical';
 const COLOR = {
   baseline: '#fda4af', // rose-300
   headroom: SLATE[100],
+  naive: '#fdba74', // orange-300
   grid: ROUTE_COLORS.GRID_NOW,
   battery: ROUTE_COLORS.STORAGE_NOW,
   flywheel: '#bef264', // lime-300
@@ -51,6 +53,7 @@ const AREAS = [
 
 const BASELINE_DASH = '6 4';
 const PACE_DASH = '1 5';
+const TODAY_DASH = '8 3 2 3';
 const GHOST_OPACITY = 0.4;
 const STRESS_OPACITY = 0.14;
 
@@ -125,14 +128,24 @@ export function MainChart({ scenario, mode, height = 420, markT = null }: Props)
 
   const rows = useMemo(() => buildRows(scenario), [scenario]);
   const runs = useMemo(() => stressRuns(scenario.grid), [scenario]);
-  const kw = useMemo(() => kwAxis(rows), [rows]);
+  const naive = mode === 'naive';
+  const kw = useMemo(() => kwAxis(rows, naive), [rows, naive]);
   const mw = useMemo(() => mwAxis(rows), [rows]);
   const n = scenario.grid.length;
   const headroom = mode === 'headroom';
   const ariaLabel = chartAriaLabel(scenario, mode);
   const markSlot = markT === null ? -1 : scenario.grid.findIndex((g) => g.t === markT);
 
-  const legend: LegendItem[] = headroom
+  const todayPeakKw = scenario.metrics.baseline_site_peak_kw;
+  const legend: LegendItem[] = naive
+    ? [
+        { kind: 'line', name: 'Cheapest-hour grid draw (kW)', color: COLOR.naive, width: 3 },
+        { kind: 'line', name: 'Baseline grid draw (kW)', color: COLOR.baseline, width: 2, dash: BASELINE_DASH, opacity: GHOST_OPACITY },
+        { kind: 'line', name: `Today’s peak, ${formatKw(todayPeakKw)}`, color: COLOR.baseline, width: 1.5, dash: TODAY_DASH },
+        { kind: 'line', name: 'PACE demand (MW)', color: COLOR.pace, width: 2, dash: PACE_DASH },
+        { kind: 'shade', name: 'Grid stress slots', color: COLOR.stress },
+      ]
+    : headroom
     ? [
         { kind: 'line', name: 'Headroom grid draw (kW)', color: COLOR.headroom, width: 3 },
         { kind: 'line', name: 'Baseline grid draw (kW)', color: COLOR.baseline, width: 2, dash: BASELINE_DASH, opacity: GHOST_OPACITY },
@@ -152,9 +165,11 @@ export function MainChart({ scenario, mode, height = 420, markT = null }: Props)
         Site grid draw (kW) and PACE demand (MW)
       </h2>
       <p className="text-sm text-slate-300">
-        {headroom
-          ? 'Where each kilowatt came from, slot by slot, with baseline faint behind it. Lower draw inside the shaded stress hours is headroom handed back to the grid.'
-          : 'The site’s grid draw when every job runs on arrival, against total PacifiCorp East demand. Shaded bands are the grid’s stress hours, the busiest 5% of these 48 hours.'}
+        {naive
+          ? 'Each job started at its own cheapest, cleanest hour. They chose the same few hours, so the site’s peak jumps far above today’s.'
+          : headroom
+            ? 'Where each kilowatt came from, slot by slot, with baseline faint behind it. Lower draw inside the shaded stress hours is headroom handed back to the grid.'
+            : 'The site’s grid draw when every job runs on arrival, against total PacifiCorp East demand. Shaded bands are the grid’s stress hours, the busiest 5% of these 48 hours.'}
       </p>
 
       <div role="img" aria-label={ariaLabel}>
@@ -251,7 +266,18 @@ export function MainChart({ scenario, mode, height = 420, markT = null }: Props)
                 />
               ))}
 
-            {headroom && (
+            {naive && (
+              <ReferenceLine
+                yAxisId="kw"
+                y={todayPeakKw}
+                stroke={COLOR.baseline}
+                strokeWidth={1.5}
+                strokeDasharray={TODAY_DASH}
+                label={{ value: 'today’s peak', position: 'insideBottomRight', fill: SLATE[100], fontSize: 12 }}
+              />
+            )}
+
+            {mode !== 'baseline' && (
               <Line
                 yAxisId="kw"
                 dataKey="baseline_kw"
@@ -266,7 +292,19 @@ export function MainChart({ scenario, mode, height = 420, markT = null }: Props)
                 isAnimationActive={false}
               />
             )}
-            {headroom ? (
+            {naive ? (
+              <Line
+                yAxisId="kw"
+                dataKey="naive_kw"
+                name="Cheapest-hour grid draw (kW)"
+                type="linear"
+                stroke={COLOR.naive}
+                strokeWidth={3}
+                dot={false}
+                activeDot={false}
+                isAnimationActive={false}
+              />
+            ) : headroom ? (
               <Line
                 yAxisId="kw"
                 dataKey="headroom_kw"

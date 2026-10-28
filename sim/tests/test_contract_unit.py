@@ -118,9 +118,23 @@ def make_doc(n: int = 192) -> dict:
         "headroom_kw": -12.345, "usd_saved": 1234.5678, "co2_avoided_t": 1.23456,
         "deadlines_met_pct": 95.0, "inference_sla_pct": 100.0, "dr_delivered_pct": 100.0,
         "dr_seconds_to_full": 20, "dr_delivered_raw_pct": 112.345,
+        "baseline_site_peak_kw": 9750.04, "headroom_site_peak_kw": 10250.0,
+    }
+    naive = PolicyResult(
+        policy="naive",
+        slots=tuple(_slot_result(t, 3250.0 + (13000.0 if i == 30 else 0.0), 3250.0,
+                                 13000.0 if i == 30 else 0.0) for i, t in enumerate(times)),
+        decisions=(), outcomes={}, moves=(),
+    )
+    naive_metrics = {
+        "site_peak_kw": 16250.04, "stress_peak_kw": 3250.0, "usd_saved": -4321.009,
+        "co2_avoided_t": 0.5, "deadlines_met_pct": 100.0, "peak_hour_starts": 2,
+        "peak_jobs_running": 2, "baseline_jobs_running": 1, "capped_missed": 1,
+        "capped_total": 2, "cap_kw": 9750.04,
     }
     params = {"filled_hours": {"PACE.D": 0, "PACE.DF": 2}, "peak_target_kw": 9100.04}
-    return build_doc("peak", inp, base, head, dr, metrics, "2026-10-27T19:05:12Z", params)
+    return build_doc("peak", inp, base, head, dr, metrics, "2026-10-27T19:05:12Z", params,
+                     naive=naive, naive_metrics=naive_metrics)
 
 
 @pytest.fixture(scope="module")
@@ -153,6 +167,8 @@ def test_build_doc_key_order_and_values(valid_doc):
     assert tuple(d["dr_event"]) == contract.DR_EVENT_KEYS
     assert tuple(d["dr_event"]["zoom"][0]) == contract.ZOOM_KEYS
     assert tuple(d["metrics"]) == contract.METRICS_KEYS
+    assert tuple(d["naive"][0]) == contract.NAIVE_KEYS
+    assert tuple(d["naive_metrics"]) == contract.NAIVE_METRICS_KEYS
 
     assert d["meta"]["window"] == ["2026-07-14T18:00:00Z", "2026-07-16T18:00:00Z"]
     assert d["meta"]["sources"] == dict(contract.SOURCES)
@@ -184,6 +200,11 @@ def test_build_doc_key_order_and_values(valid_doc):
     assert d["metrics"]["co2_avoided_t"] == 1.235
     assert d["metrics"]["dr_seconds_to_full"] == 20
     assert isinstance(d["metrics"]["dr_seconds_to_full"], int)
+    assert d["metrics"]["baseline_site_peak_kw"] == 9750.0
+    assert d["naive"][30]["grid_kw"] == 16250.0
+    assert d["naive_metrics"]["usd_saved"] == -4321.01          # negatives reported raw
+    assert d["naive_metrics"]["cap_kw"] == 9750.0
+    assert isinstance(d["naive_metrics"]["capped_missed"], int)
 
 
 def test_dumps_round_trip_is_exact(valid_doc):
@@ -352,6 +373,18 @@ MUTATIONS = [
     ("seconds above 600", _set(["metrics", "dr_seconds_to_full"], 601), "metrics.dr_seconds_to_full"),
     ("metric is bool", _set(["metrics", "usd_saved"], True), "metrics.usd_saved"),
     ("metric missing", _delete(["metrics", "co2_avoided_t"]), "metrics: missing key 'co2_avoided_t'"),
+    # cheapest hour (DECISIONS.md, "Cheapest hour")
+    ("naive missing", _delete(["naive"]), "$: missing key 'naive'"),
+    ("naive too short", lambda d: d["naive"].pop(), "naive: expected 192"),
+    ("naive extra key", _set(["naive", 0, "battery_kw"], 0.0), "naive[0]: unexpected key"),
+    ("naive t mismatch", _set(["naive", 4, "t"], "2026-07-14T18:00:00Z"), "naive[4].t"),
+    ("naive_metrics missing key", _delete(["naive_metrics", "cap_kw"]), "naive_metrics: missing key 'cap_kw'"),
+    ("naive count is float", _set(["naive_metrics", "capped_missed"], 1.0), "naive_metrics.capped_missed"),
+    ("naive count negative", _set(["naive_metrics", "peak_jobs_running"], -1),
+     "naive_metrics.peak_jobs_running"),
+    ("naive missed above total", _set(["naive_metrics", "capped_missed"], 3), "more than capped_total"),
+    ("naive pct above 100", _set(["naive_metrics", "deadlines_met_pct"], 100.1),
+     "naive_metrics.deadlines_met_pct"),
 ]
 
 
@@ -379,7 +412,7 @@ def test_key_constants_match_scheduler_and_types():
     assert contract.INTERFACE_KEYS["HeadroomPoint"] == contract.HEADROOM_KEYS
     assert set(contract.INTERFACE_KEYS) == {
         "Scenario", "Meta", "Sources", "GridPoint", "BaselinePoint", "HeadroomPoint",
-        "Decision", "OptionCost", "DrEvent", "ZoomPoint", "Metrics",
+        "Decision", "OptionCost", "DrEvent", "ZoomPoint", "Metrics", "NaiveMetrics",
     }
 
 

@@ -98,6 +98,24 @@ export interface Metrics {
   inference_sla_pct: number;
   dr_delivered_pct: number;
   dr_seconds_to_full: number;
+  baseline_site_peak_kw: number; // highest grid draw over the window: the connection the site needs
+  headroom_site_peak_kw: number;
+}
+
+// The cheapest-hour policy against baseline: each job picks its own cheapest,
+// cleanest start, blind to the site's peak.
+export interface NaiveMetrics {
+  site_peak_kw: number;
+  stress_peak_kw: number;
+  usd_saved: number; // vs baseline; negative when it costs more
+  co2_avoided_t: number;
+  deadlines_met_pct: number;
+  peak_hour_starts: number; // jobs starting in the clock hour of the new peak
+  peak_jobs_running: number; // jobs running in the peak slot
+  baseline_jobs_running: number; // jobs running in that slot under baseline
+  capped_missed: number; // held to cap_kw: jobs that miss their deadline
+  capped_total: number;
+  cap_kw: number; // today's connection: the baseline window peak
 }
 
 export interface Scenario {
@@ -105,7 +123,9 @@ export interface Scenario {
   grid: GridPoint[];
   baseline: BaselinePoint[];
   headroom: HeadroomPoint[];
+  naive: BaselinePoint[]; // cheapest hour: same row shape as baseline
   decisions: Decision[];
   dr_event: DrEvent;
   metrics: Metrics;
+  naive_metrics: NaiveMetrics;
 }

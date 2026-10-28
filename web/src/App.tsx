@@ -75,12 +75,13 @@ export default function App() {
   const onFireDr = useCallback(() => dispatch({ type: 'fireDr', instant: instantDr }), [instantDr]);
   const onDrDone = useCallback(() => dispatch({ type: 'drComplete' }), []);
 
-  // Guide steps: 1 = Baseline, 2 = Headroom, 3 = Headroom and fire the event.
-  // setMode resets the DR phase, so step 3 replays the event from s = 0.
+  // Guide steps: 1 = Baseline, 2 = Cheapest hour, 3 = Headroom, 4 = Headroom
+  // and fire the event. setMode resets the DR phase, so step 4 replays the
+  // event from s = 0.
   const onStep = useCallback(
     (step: GuideStep) => {
-      dispatch({ type: 'setMode', mode: step === 1 ? 'baseline' : 'headroom' });
-      if (step === 3) dispatch({ type: 'fireDr', instant: instantDr });
+      dispatch({ type: 'setMode', mode: step === 1 ? 'baseline' : step === 2 ? 'naive' : 'headroom' });
+      if (step === 4) dispatch({ type: 'fireDr', instant: instantDr });
     },
     [instantDr],
   );

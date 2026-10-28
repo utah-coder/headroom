@@ -21,6 +21,11 @@
   14.9, DECISIONS.md).
 * ``dr_seconds_to_full``: first Event_Zoom second with the flywheel at 0 kW and
   the battery at the required storage output (Requirement 14.10).
+* ``baseline_site_peak_kw`` / ``headroom_site_peak_kw``: the highest grid draw
+  of each policy over the whole window, the grid connection the site needs.
+
+``compute_naive`` gives the cheapest-hour policy's ``NaiveMetrics`` against
+baseline (DECISIONS.md, "Cheapest hour").
 
 ``headroom_kw``, ``usd_saved`` and ``co2_avoided_t`` are returned unrounded and
 unclamped, including zero or negative values (Requirement 15.7); the output
@@ -38,14 +43,23 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from sim.config import DEMAND_CHARGE_PER_KW, MOVE_PENALTY_USD, ROUND, SLOT_MINUTES
-from sim.scheduler import MoveRecord, PolicyResult, ScenarioInputs
+from sim.config import DEMAND_CHARGE_PER_KW, MOVE_PENALTY_USD, ROUND, SLOT_MINUTES, SLOTS_PER_HOUR
+from sim.scheduler import (
+    MoveRecord,
+    PolicyResult,
+    ScenarioInputs,
+    naive_capped_missed,
+    naive_starts,
+    run_slots,
+)
 from sim.site import ZoomEntry
 
 __all__ = [
     "METRIC_KEYS",
+    "NAIVE_METRIC_KEYS",
     "DrInputs",
     "Metrics",
+    "NaiveMetrics",
     "stress_indices",
     "slot_hours",
     "policy_cost_usd",
@@ -54,6 +68,8 @@ __all__ = [
     "clamp_pct",
     "dr_seconds_to_full",
     "compute",
+    "site_peak_kw",
+    "compute_naive",
 ]
 
 # Key order of the output contract's ``metrics`` object (Requirement 16.10).
@@ -65,6 +81,23 @@ METRIC_KEYS: tuple[str, ...] = (
     "inference_sla_pct",
     "dr_delivered_pct",
     "dr_seconds_to_full",
+    "baseline_site_peak_kw",
+    "headroom_site_peak_kw",
+)
+
+# Key order of the output contract's ``naive_metrics`` object.
+NAIVE_METRIC_KEYS: tuple[str, ...] = (
+    "site_peak_kw",
+    "stress_peak_kw",
+    "usd_saved",
+    "co2_avoided_t",
+    "deadlines_met_pct",
+    "peak_hour_starts",
+    "peak_jobs_running",
+    "baseline_jobs_running",
+    "capped_missed",
+    "capped_total",
+    "cap_kw",
 )
 
 _MIN_PER_HOUR = 60
@@ -90,10 +123,32 @@ class Metrics:
     dr_delivered_pct: float        # clamped to [0, 100], rounded to ROUND["pct"]
     dr_seconds_to_full: int
     dr_delivered_raw_pct: float    # unclamped, unrounded; goes to meta.params
+    baseline_site_peak_kw: float
+    headroom_site_peak_kw: float
 
     def to_dict(self) -> dict[str, float]:
-        """The seven contract ``metrics`` keys in contract order."""
+        """The contract ``metrics`` keys in contract order."""
         return {k: getattr(self, k) for k in METRIC_KEYS}
+
+
+@dataclass(frozen=True)
+class NaiveMetrics:
+    """The cheapest-hour policy against baseline (contract ``naive_metrics``)."""
+
+    site_peak_kw: float            # highest grid draw over the window
+    stress_peak_kw: float          # highest grid draw over the Stress_Slots
+    usd_saved: float               # cost(base) − cost(naive); negative when it costs more
+    co2_avoided_t: float           # no moves, so grid energy only
+    deadlines_met_pct: float
+    peak_hour_starts: int          # jobs starting in the clock hour of the naive peak
+    peak_jobs_running: int         # jobs running in the naive peak slot
+    baseline_jobs_running: int     # jobs running in that same slot under baseline
+    capped_missed: int             # held to cap_kw: jobs that miss their deadline
+    capped_total: int
+    cap_kw: float                  # today's connection: the baseline window peak
+
+    def to_dict(self) -> dict[str, float]:
+        return {k: getattr(self, k) for k in NAIVE_METRIC_KEYS}
 
 
 # --- Building blocks (also used as reference points by tests) ---------------
@@ -158,6 +213,20 @@ def policy_emissions_g(inp: ScenarioInputs, res: PolicyResult, *, include_moves:
     return grams
 
 
+def site_peak_kw(res: PolicyResult) -> float:
+    """Highest grid draw over the whole window."""
+    if not res.slots:
+        raise ValueError(f"{res.policy}: no slots")
+    return max(r.grid_kw for r in res.slots)
+
+
+def _deadlines_met_pct(inp: ScenarioInputs, res: PolicyResult) -> float:
+    if not inp.jobs:
+        return _PCT
+    met = sum(1 for j in inp.jobs if (o := res.outcomes.get(j.id)) is not None and o.met_deadline)
+    return _PCT * met / len(inp.jobs)
+
+
 def dr_delivered_raw_pct(inp: ScenarioInputs, base: PolicyResult, head: PolicyResult,
                          requested_shed_kw: float) -> float:
     """Unclamped, unrounded DR delivered percentage (Requirement 14.9)."""
@@ -210,12 +279,7 @@ def compute(inp: ScenarioInputs, base: PolicyResult, head: PolicyResult, dr: DrI
     co2_avoided_t = (policy_emissions_g(inp, base, include_moves=False)
                      - policy_emissions_g(inp, head, include_moves=True)) / _G_PER_TONNE
 
-    if inp.jobs:
-        met = sum(1 for j in inp.jobs
-                  if (o := head.outcomes.get(j.id)) is not None and o.met_deadline)
-        deadlines_met_pct = _PCT * met / len(inp.jobs)
-    else:
-        deadlines_met_pct = _PCT
+    deadlines_met_pct = _deadlines_met_pct(inp, head)
 
     inference = inp.inference_fac
     served = sum(1 for r, want in zip(head.slots, inference) if r.inference_kw == want)
@@ -232,4 +296,46 @@ def compute(inp: ScenarioInputs, base: PolicyResult, head: PolicyResult, dr: DrI
         dr_delivered_pct=clamp_pct(raw),
         dr_seconds_to_full=dr_seconds_to_full(dr.zoom, dr.required_kw),
         dr_delivered_raw_pct=raw,
+        baseline_site_peak_kw=site_peak_kw(base),
+        headroom_site_peak_kw=site_peak_kw(head),
+    )
+
+
+def compute_naive(inp: ScenarioInputs, base: PolicyResult, naive: PolicyResult) -> NaiveMetrics:
+    """``NaiveMetrics`` for ``naive = run_naive(inp)`` against ``base = run_baseline(inp)``.
+
+    ``cap_kw`` is the baseline window peak, the connection the site has today.
+    ``peak_hour_starts`` counts jobs whose start slot falls in the clock hour
+    (UTC hour, which is also a Denver hour) of the first slot at the naive peak;
+    ``peak_jobs_running`` and ``baseline_jobs_running`` count the jobs with work
+    in that slot under each policy (owner request, DECISIONS.md).
+    """
+    _check_slots(inp, base)
+    _check_slots(inp, naive)
+    grid = [r.grid_kw for r in naive.slots]
+    peak = max(grid)
+    p = grid.index(peak)
+    hour = p // SLOTS_PER_HOUR
+    starts = naive_starts(inp)
+
+    def running(start: dict[str, int]) -> int:
+        return sum(1 for j in inp.jobs
+                   if any(k == p for k, _ in run_slots(start[j.id], j.duration_min, inp.n_slots)))
+
+    cap = site_peak_kw(base)
+    missed, total = naive_capped_missed(inp, cap)
+    return NaiveMetrics(
+        site_peak_kw=peak,
+        stress_peak_kw=max(grid[i] for i in stress_indices(inp)),
+        usd_saved=(policy_cost_usd(inp, base, include_moves=False)
+                   - policy_cost_usd(inp, naive, include_moves=False)),
+        co2_avoided_t=(policy_emissions_g(inp, base, include_moves=False)
+                       - policy_emissions_g(inp, naive, include_moves=False)) / _G_PER_TONNE,
+        deadlines_met_pct=_deadlines_met_pct(inp, naive),
+        peak_hour_starts=sum(1 for s in starts.values() if s // SLOTS_PER_HOUR == hour),
+        peak_jobs_running=running(starts),
+        baseline_jobs_running=running({j.id: j.arrival_slot for j in inp.jobs}),
+        capped_missed=missed,
+        capped_total=total,
+        cap_kw=cap,
     )

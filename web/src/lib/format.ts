@@ -27,6 +27,13 @@ export function formatKw(n: number): string {
   return `${sign(r)}${groupInt(Math.abs(r))} kW`;
 }
 
+/** "+1,234 kW" / "-1,234 kW" / "0 kW": a change, always signed unless it rounds to zero. */
+export function formatKwChange(n: number): string {
+  if (!Number.isFinite(n)) return NOT_A_NUMBER;
+  const r = Math.round(n);
+  return `${r > 0 ? '+' : sign(r)}${groupInt(Math.abs(r))} kW`;
+}
+
 /** "$12,345" / "-$12,345" (whole dollars, Math.round). */
 export function formatUsd(n: number): string {
   if (!Number.isFinite(n)) return NOT_A_NUMBER;

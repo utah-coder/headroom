@@ -121,6 +121,9 @@ __all__ = [
     "SlotTrace",
     "HeadroomTrace",
     "run_headroom",
+    "naive_starts",
+    "run_naive",
+    "naive_capped_missed",
 ]
 
 Route = Literal["GRID_NOW", "STORAGE_NOW", "DEFER", "MOVE_REGION"]
@@ -577,12 +580,14 @@ def reason_string(
 
 # --- Policies ----------------------------------------------------------------
 
-def run(policy: Literal["baseline", "headroom"], inp: ScenarioInputs) -> PolicyResult:
+def run(policy: Literal["baseline", "headroom", "naive"], inp: ScenarioInputs) -> PolicyResult:
     """Run one policy over the scenario (Requirement 11.1)."""
     if policy == "baseline":
         return run_baseline(inp)
     if policy == "headroom":
         return run_headroom(inp)
+    if policy == "naive":
+        return run_naive(inp)
     raise ValueError(f"unknown policy: {policy!r}")
 
 
@@ -1582,3 +1587,114 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
         moves=tuple(planner.moves),
         trace=HeadroomTrace(planner.peak_target, tuple(slot_traces)) if trace else None,
     )
+
+
+# --- Cheapest-hour policy (DECISIONS.md, "Cheapest hour") --------------------
+#
+# The obvious fix, for comparison only: each job, on arrival, independently
+# picks the start that minimises its own energy price + carbon (at the
+# CARBON_SHADOW_USD_PER_T shadow price) before its deadline. It is blind to the
+# site's peak: no storage, no moves, no demand-response response and no
+# coordination between jobs. Costs are summed in plain Python, not np.dot, so
+# the chosen starts cannot differ between machines (DECISIONS.md 14:41 MT).
+
+def _run_cost(unit: Sequence[float], kw_fac: float, start: int, minutes: int, n: int) -> float:
+    """$ of running ``kw_fac`` continuously from ``start``, truncated at the window end."""
+    return sum(kw_fac * u / _MIN_PER_HOUR * unit[k] for k, u in run_slots(start, minutes, n))
+
+
+def _cheapest(unit: Sequence[float], job: TrainingJob, starts: Iterable[int], n: int) -> int | None:
+    """Lowest-cost start (rounded to 1e-9 $), earliest on ties; ``None`` if no start is given."""
+    kw = facility_kw(job.power_kw)
+    best: tuple[float, int] | None = None
+    for s in starts:
+        key = (round(_run_cost(unit, kw, s, job.duration_min, n), _COST_DIGITS), s)
+        if best is None or key < best:
+            best = key
+    return None if best is None else best[1]
+
+
+def _on_time_starts(job: TrainingJob, n: int, *, in_window: bool) -> range:
+    """Starts from arrival that finish by the deadline (and by the window end if ``in_window``)."""
+    last_finish = min(job.deadline_min, window_minutes(n)) if in_window else job.deadline_min
+    last = min(n - 1, (last_finish - job.duration_min) // SLOT_MINUTES)
+    return range(job.arrival_slot, last + 1)
+
+
+def naive_starts(inp: ScenarioInputs) -> dict[str, int]:
+    """Start slot of every job under the cheapest-hour policy.
+
+    A job that cannot finish inside the window by its deadline from any start
+    runs on arrival, like baseline.
+    """
+    n = inp.n_slots
+    unit = [unit_cost_per_kwh(g) for g in inp.slots]
+    out: dict[str, int] = {}
+    for j in inp.jobs:
+        s = _cheapest(unit, j, _on_time_starts(j, n, in_window=True), n)
+        out[j.id] = j.arrival_slot if s is None else s
+    return out
+
+
+def run_naive(inp: ScenarioInputs) -> PolicyResult:
+    """Cheapest-hour policy: every job runs continuously from its ``naive_starts`` slot.
+
+    Inference is served unchanged in every slot; storage stays idle at its
+    initial SOC; nothing moves. No Decisions are recorded (the page explains
+    the policy in one paragraph instead of a log).
+    """
+    n = inp.n_slots
+    start = naive_starts(inp)
+    states = [JobState.new(j, n) for j in inp.jobs]
+    inference_fac = inp.inference_fac
+    bat_soc, fly_soc = _initial_soc_pct()
+    out_slots: list[SlotResult] = []
+    for s, slot in enumerate(inp.slots):
+        training_it = sum(js.run_slot(s).it_kw for js in states
+                          if start[js.job.id] <= s and js.remaining_min > 0)
+        training_fac = facility_kw(training_it)
+        out_slots.append(SlotResult(
+            t=slot.t,
+            grid_kw=inference_fac[s] + training_fac,
+            inference_kw=inference_fac[s],
+            training_kw=training_fac,
+            battery=_IDLE,
+            flywheel=_IDLE,
+            battery_soc_pct=bat_soc,
+            flywheel_soc_pct=fly_soc,
+            moved_kw=0.0,
+        ))
+    return PolicyResult(policy="naive", slots=tuple(out_slots), decisions=(),
+                        outcomes=outcomes(states, n), moves=())
+
+
+def naive_capped_missed(inp: ScenarioInputs, cap_kw: float) -> tuple[int, int]:
+    """``(jobs that miss their deadline, jobs)`` for the cheapest-hour policy held to ``cap_kw``.
+
+    Jobs are placed first come, first served (arrival slot, then id). Each
+    takes its cheapest on-time start whose run keeps the site's grid draw at
+    or below ``cap_kw`` in every window slot; on time means finishing by its
+    deadline, carrying past the window end like the baseline accounting. A job
+    with no on-time start that fits takes the earliest start that fits and is
+    late; one with no start that fits at all never runs and is also late.
+    """
+    n = inp.n_slots
+    unit = [unit_cost_per_kwh(g) for g in inp.slots]
+    load = list(inp.inference_fac)
+    missed = 0
+    for j in sorted(inp.jobs, key=lambda j: (j.arrival_slot, int(j.id))):
+        kw = facility_kw(j.power_kw)
+
+        def fits(s: int) -> bool:
+            return all(load[k] + kw * u / SLOT_MINUTES <= cap_kw + _KW_TOL
+                       for k, u in run_slots(s, j.duration_min, n))
+
+        s = _cheapest(unit, j, (s for s in _on_time_starts(j, n, in_window=False) if fits(s)), n)
+        if s is None:
+            missed += 1
+            s = next((k for k in range(j.arrival_slot, n) if fits(k)), None)
+            if s is None:
+                continue
+        for k, u in run_slots(s, j.duration_min, n):
+            load[k] += kw * u / SLOT_MINUTES
+    return missed, len(inp.jobs)

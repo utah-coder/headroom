@@ -1,16 +1,25 @@
 import type { Scenario } from '../types';
 import type { DrPhase, Mode } from '../state/appState';
-import { formatKw, formatPct, formatTonnes, formatUsd } from './format';
+import { formatKw, formatKwChange, formatPct, formatTonnes, formatUsd } from './format';
 
 // KPI selector for KpiRow (Requirements 18.5–18.7, 18.10, 20.5, 24.3).
 // Pure: same inputs give the same output, no React, no side effects.
+// Cheapest-hour mode reads naive_metrics; its stress-hour headroom and
+// inference SLA come from the series (DECISIONS.md, "Cheapest hour").
 
-export type KpiId = 'headroom_kw' | 'usd_saved' | 'co2_avoided_t' | 'inference_sla_pct' | 'deadlines_met_pct';
+export type KpiId =
+  | 'site_peak_kw'
+  | 'headroom_kw'
+  | 'usd_saved'
+  | 'co2_avoided_t'
+  | 'inference_sla_pct'
+  | 'deadlines_met_pct';
 
 export interface KpiCardValue {
   id: KpiId;
   label: string;
   value: string; // formatted per Requirement 18.10
+  change?: string; // vs baseline, e.g. "+19,627 kW vs baseline"
   note?: string; // small qualifier under the value
 }
 
@@ -21,8 +30,8 @@ export interface DrStripValue {
 }
 
 export interface KpiSelection {
-  cards: [KpiCardValue, KpiCardValue, KpiCardValue, KpiCardValue, KpiCardValue];
-  dr: [DrStripValue, DrStripValue, DrStripValue] | null; // null unless dr === 'done'
+  cards: [KpiCardValue, KpiCardValue, KpiCardValue, KpiCardValue, KpiCardValue, KpiCardValue];
+  dr: [DrStripValue, DrStripValue, DrStripValue] | null; // null unless Headroom and dr === 'done'
 }
 
 // Baseline_Policy values (Requirement 18.7): nothing freed, saved or avoided,
@@ -44,24 +53,56 @@ function formatSeconds(n: number): string {
   return `${r < 0 ? '-' : ''}${secondsFormat.format(Math.abs(r))} s`;
 }
 
+/** Highest grid draw over the stress slots. */
+function stressPeakKw(scenario: Scenario, series: readonly { grid_kw: number }[]): number {
+  return Math.max(...scenario.grid.flatMap((g, i) => (g.stress ? [series[i].grid_kw] : [])));
+}
+
+/** The cheapest-hour policy's KPIs, in the shape of the Headroom ones. */
+function naiveValues(scenario: Scenario) {
+  const nm = scenario.naive_metrics;
+  const served = scenario.naive.filter((r, i) => r.inference_kw === scenario.baseline[i].inference_kw).length;
+  return {
+    headroom_kw: stressPeakKw(scenario, scenario.baseline) - nm.stress_peak_kw,
+    usd_saved: nm.usd_saved,
+    co2_avoided_t: nm.co2_avoided_t,
+    inference_sla_pct: (100 * served) / scenario.naive.length,
+    deadlines_met_pct: nm.deadlines_met_pct,
+  };
+}
+
 export function selectKpis(scenario: Scenario, mode: Mode, dr: DrPhase): KpiSelection {
-  const headroom = mode === 'headroom';
-  const m = headroom ? scenario.metrics : BASELINE;
+  const reference = mode === 'baseline';
+  const m = mode === 'headroom' ? scenario.metrics : mode === 'naive' ? naiveValues(scenario) : BASELINE;
+  const baselinePeak = scenario.metrics.baseline_site_peak_kw;
+  const sitePeak =
+    mode === 'headroom'
+      ? scenario.metrics.headroom_site_peak_kw
+      : mode === 'naive'
+        ? scenario.naive_metrics.site_peak_kw
+        : baselinePeak;
 
   // One short line under each value for an audience new to the demo. Baseline
   // is the reference the savings are measured against, so its zeros say so.
   const cards: KpiSelection['cards'] = [
     {
+      id: 'site_peak_kw',
+      label: 'Site peak',
+      value: formatKw(sitePeak),
+      change: reference ? undefined : `${formatKwChange(sitePeak - baselinePeak)} vs baseline`,
+      note: 'grid connection the site needs',
+    },
+    {
       id: 'headroom_kw',
       label: 'Headroom returned (stress hours)',
       value: formatKw(m.headroom_kw),
-      note: headroom ? 'grid capacity freed at the grid’s busiest hours' : 'baseline is the reference point',
+      note: reference ? 'baseline is the reference point' : 'grid capacity freed at the grid’s busiest hours',
     },
     {
       id: 'usd_saved',
       label: '$ saved',
       value: formatUsd(m.usd_saved),
-      note: headroom ? 'energy + demand charges, 48 h' : 'baseline is the reference point',
+      note: reference ? 'baseline is the reference point' : 'energy + demand charges, 48 h',
     },
     {
       id: 'co2_avoided_t',
@@ -83,9 +124,9 @@ export function selectKpis(scenario: Scenario, mode: Mode, dr: DrPhase): KpiSele
     },
   ];
 
-  // DR values appear only after playback completes or the static chart shows (Requirement 20.5).
+  // DR values appear only in Headroom, after playback completes or the static chart shows (Requirement 20.5).
   const drStrip: KpiSelection['dr'] =
-    dr === 'done'
+    mode === 'headroom' && dr === 'done'
       ? [
           {
             id: 'requested_shed_kw',

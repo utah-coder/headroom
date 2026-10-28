@@ -4,7 +4,7 @@ import type { DrPhase, Mode } from '../state/appState';
 import { formatKw } from '../lib/format';
 import { RouteGlossary } from './RouteChip';
 
-// Guide panel under the header: what the project is, the three demo steps,
+// Guide panel under the header: what the project is, the four demo steps,
 // a plain-language explanation (data, engine, scorecard) with what is real and
 // why it matters, and a collapsible "Technical details" section. The steps are buttons that drive the same
 // state as the Mode toggle and the DR button, and the current step follows
@@ -12,7 +12,7 @@ import { RouteGlossary } from './RouteChip';
 // Figures come from the Scenario where it carries them; the tariff and
 // carbon price match sim/config.py (DEMAND_CHARGE_PER_KW, CARBON_SHADOW_USD_PER_T).
 
-export type GuideStep = 1 | 2 | 3;
+export type GuideStep = 1 | 2 | 3 | 4;
 
 const DEMAND_CHARGE_PER_KW = 18;
 const CARBON_SHADOW_USD_PER_T = 50;
@@ -50,10 +50,10 @@ function plainSteps(metrics: Metrics): { label: string; title: string; text: str
       label: 'Scorecard',
       title: 'A scorecard',
       text:
-        'We then replay what really happened on the grid and compare two versions of the same data center. One ' +
-        'runs every job the moment it arrives, which is how most sites work today. The other lets Headroom ' +
-        'decide. The difference is the result: grid capacity freed in the busiest hours, dollars saved and ' +
-        'carbon avoided.' +
+        'We then replay what really happened on the grid and compare three versions of the same data center: one ' +
+        'that runs every job the moment it arrives, one where every job chases its own cheapest hour, and one ' +
+        'where Headroom decides. The difference is the result: grid capacity freed in the busiest hours, ' +
+        'dollars saved and carbon avoided.' +
         (nothingMissed ? ' Customer-facing work never slows and no deadline is missed.' : ''),
     },
   ];
@@ -87,7 +87,8 @@ interface Props {
 
 export function currentStep(mode: Mode, dr: DrPhase): GuideStep {
   if (mode === 'baseline') return 1;
-  return dr === 'idle' ? 2 : 3;
+  if (mode === 'naive') return 2;
+  return dr === 'idle' ? 3 : 4;
 }
 
 export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
@@ -107,11 +108,18 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
     },
     {
       n: 2,
-      title: 'Turn on Headroom',
-      text: 'Jobs take their cheapest route once energy, carbon and peak demand are priced in. Inference never moves.',
+      title: 'Chase the cheapest hour',
+      text:
+        'The obvious fix: every job waits for its own cheapest, cleanest hour. Nobody coordinates, so they pick ' +
+        'the same ones.',
     },
     {
       n: 3,
+      title: 'Turn on Headroom',
+      text: 'Jobs are priced together, including what they add to the site’s peak. Inference never moves.',
+    },
+    {
+      n: 4,
       title: 'Fire a demand-response event',
       text:
         `The utility asks the site to cut ${formatKw(dr_event.requested_shed_kw)} for ${drHours} h to ease the grid. ` +
@@ -151,7 +159,7 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
           </div>
         </div>
 
-        <ol aria-label="Demo steps" className="grid gap-2 sm:grid-cols-3">
+        <ol aria-label="Demo steps" className="grid gap-2 sm:grid-cols-4">
           {steps.map(({ n, title, text }) => {
             const isCurrent = n === current;
             return (
@@ -233,6 +241,11 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
           </div>
           <div className="flex flex-col gap-2">
             <h3 className="font-semibold text-slate-100">What the numbers mean</h3>
+            <p>
+              <span className="font-semibold text-slate-100">Site peak:</span> the site’s highest grid draw over the
+              48 hours, which sets the size of the grid connection it needs. Shown against baseline in the other two
+              modes.
+            </p>
             <p>
               <span className="font-semibold text-slate-100">Headroom returned:</span> how much lower the site’s
               highest grid draw is than baseline during the grid’s stress hours, the busiest 5% of the 48 hours by

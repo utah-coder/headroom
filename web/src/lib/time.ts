@@ -21,3 +21,10 @@ export function hhmmDenver(t: string | Date): string {
   if (hour === '24') hour = '00';
   return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
 }
+
+const denverWeekday = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', weekday: 'long' });
+
+/** Weekday name ("Tuesday") of an instant in America/Denver. */
+export function weekdayDenver(t: string | Date): string {
+  return denverWeekday.format(typeof t === 'string' ? new Date(t) : t);
+}

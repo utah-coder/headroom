@@ -17,6 +17,7 @@ const SCENARIO_OPTIONS: readonly ToggleOption<ScenarioName>[] = SCENARIOS.map((s
 
 const MODE_OPTIONS: readonly ToggleOption<Mode>[] = [
   { value: 'baseline', label: 'Baseline' },
+  { value: 'naive', label: 'Cheapest hour' },
   { value: 'headroom', label: 'Headroom' },
 ];
 

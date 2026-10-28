@@ -6,13 +6,24 @@ import { hhmmDenver } from '../lib/time';
 import { ZoomPanel } from './ZoomPanel';
 
 // DR panel (Requirements 20.1, 20.2, 20.9). The "Fire demand-response event"
-// button shows in both modes. In Baseline it is aria-disabled rather than
+// button shows in every mode. Outside Headroom it is aria-disabled rather than
 // disabled, so it stays in the tab order (Requirement 18.8); a click or
 // Enter/Space does nothing, and the helper text is linked by aria-describedby.
 // Activations while playing are ignored by the reducer (Requirement 20.9).
 
 const LABEL = 'Fire demand-response event';
-const BASELINE_HELP = 'Switch to Headroom to dispatch storage';
+const HELP: Record<Exclude<Mode, 'headroom'>, string> = {
+  baseline: 'Switch to Headroom to dispatch storage',
+  naive: 'Cheapest hour has no storage and doesn’t respond to the utility.',
+};
+const IDLE_TEXT: Record<Mode, string> = {
+  baseline:
+    'Baseline never uses storage or shifts jobs, so it cannot respond. In Headroom mode, this shows the first 10 minutes of the event second by second.',
+  naive:
+    'Cheapest hour keeps every job at the start it picked, so it cannot respond. In Headroom mode, this shows the first 10 minutes of the event second by second.',
+  headroom:
+    'Fire the event: Headroom pauses or moves training, and grid draw drops to the cap as the flywheel and battery take over.',
+};
 
 interface Props {
   scenario: Scenario;
@@ -27,7 +38,7 @@ interface Props {
 
 export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
   const helpId = `${useId()}-dr-help`;
-  const disabled = mode === 'baseline';
+  const disabled = mode !== 'headroom';
   const { dr_event } = scenario;
   const drHours = Math.round((Date.parse(dr_event.end) - Date.parse(dr_event.start)) / 3_600_000);
 
@@ -63,9 +74,9 @@ export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
         >
           {LABEL}
         </button>
-        {disabled && (
+        {mode !== 'headroom' && (
           <p id={helpId} className="text-sm text-slate-300">
-            {BASELINE_HELP}
+            {HELP[mode]}
           </p>
         )}
       </div>
@@ -75,11 +86,7 @@ export function DrPanel({ scenario, mode, dr, drRun, onFire, onDone }: Props) {
         dr={dr}
         drRun={drRun}
         onDone={onDone}
-        idleText={
-          disabled
-            ? 'Baseline never uses storage or shifts jobs, so it cannot respond. In Headroom mode, this shows the first 10 minutes of the event second by second.'
-            : 'Fire the event: Headroom pauses or moves training, and grid draw drops to the cap as the flywheel and battery take over.'
-        }
+        idleText={IDLE_TEXT[mode]}
       />
     </section>
   );
