@@ -34,6 +34,15 @@ export const TEXT = {
   muted: SLATE[400],
 } as const;
 
+/** Shades used only for control and alert surfaces and the text on them. */
+export const CONTROL = {
+  sky200: '#bae6fd', // DR button hover surface
+  sky300: '#7dd3fc', // DR button surface
+  red100: '#fee2e2', // error banner text
+  red200: '#fecaca', // error banner detail text
+  red950: '#450a0a', // error banner surface
+} as const;
+
 /** Every text/background pair the UI draws; each must reach 4.5:1. */
 export const TEXT_PAIRS: ReadonlyArray<{ name: string; fg: string; bg: string }> = [
   ...Object.entries(TEXT).flatMap(([t, fg]) =>
@@ -42,6 +51,14 @@ export const TEXT_PAIRS: ReadonlyArray<{ name: string; fg: string; bg: string }>
   ...Object.entries(ROUTE_COLORS).flatMap(([route, fg]) =>
     Object.entries(BACKGROUNDS).map(([b, bg]) => ({ name: `${route} on ${b}`, fg, bg })),
   ),
+  // Controls (ToggleGroup, DrPanel) and the ErrorBanner.
+  { name: 'selected toggle: slate-950 on slate-100', fg: SLATE[950], bg: SLATE[100] },
+  { name: 'toggle hover: slate-100 on slate-800', fg: SLATE[100], bg: SLATE[800] },
+  { name: 'DR button: slate-950 on sky-300', fg: SLATE[950], bg: CONTROL.sky300 },
+  { name: 'DR button hover: slate-950 on sky-200', fg: SLATE[950], bg: CONTROL.sky200 },
+  { name: 'DR button, Baseline: slate-400 on slate-800', fg: SLATE[400], bg: SLATE[800] },
+  { name: 'error banner: red-100 on red-950', fg: CONTROL.red100, bg: CONTROL.red950 },
+  { name: 'error detail: red-200 on red-950', fg: CONTROL.red200, bg: CONTROL.red950 },
 ];
 
 /** Parse "#rgb" or "#rrggbb" into 0–255 channels. */

@@ -53,7 +53,7 @@ export function Footer({ scenario }: FooterProps) {
             rel="noopener noreferrer"
             className="break-all text-slate-100 underline underline-offset-2 hover:text-slate-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-100"
           >
-            Source on GitHub
+            Source on GitHub<span className="sr-only"> (opens in a new tab)</span>
           </a>
           <span>
             Built <time dateTime={builtAt}>{builtAt}</time>

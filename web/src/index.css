@@ -9,6 +9,15 @@ html {
   color-scheme: dark;
 }
 
+/* Fallback keyboard focus ring for anything without its own focus-visible
+   utilities (Requirement 18.8). In the base layer, so component utilities win. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-sky-300);
+    outline-offset: 2px;
+  }
+}
+
 body {
   @apply bg-slate-950 text-slate-100 font-sans antialiased;
   /* No horizontal scrolling at 390 px (Requirement 22.10). */

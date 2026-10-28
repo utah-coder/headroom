@@ -17,7 +17,9 @@ import type { ScenarioName } from './types';
 // (Requirements 17.1–17.3). One page, no routes or in-app links (Requirement 22.8).
 //
 // Layout, >= 1280 px: header, KPI row, [chart + carbon band | DR + zoom + log] at 2:1,
-// fixed footer. Below that: a single column.
+// fixed footer. The decision log fills the rest of the side column, so at
+// 1920x1080 everything down to the footer fits without scrolling, with or
+// without the KPI DR strip (Requirement 22.9). Below that: a single column.
 
 export default function App() {
   const [loaded, setLoaded] = useState<Loaded | null>(null);

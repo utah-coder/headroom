@@ -78,16 +78,22 @@ export function DecisionLog({ scenario, mode, dr }: Props) {
     );
   }
 
+  // Below 1280 px the scroll region is a fixed 18rem. At >= 1280 px it has a
+  // zero flex basis and a 12rem minimum, so it fills whatever the side column
+  // has left in the grid row without making the row taller; the row height is
+  // set by the layout, never by the number of decisions (Requirements 21.4, 22.9).
   return (
-    <section className="rounded-lg bg-slate-900 p-4" aria-labelledby="decision-log-heading">
+    <section className="flex flex-col rounded-lg bg-slate-900 p-4 xl:grow">
       <h2 id="decision-log-heading" className="mb-2 text-base font-semibold text-slate-100">
         Decision log
       </h2>
+      {/* A focusable scroll region needs a role that may carry a name. */}
       <div
         ref={scrollRef}
         tabIndex={0}
+        role="region"
         aria-label={drFired ? 'Decision log, demand-response decisions first' : 'Decision log, newest first'}
-        className="h-72 overflow-x-hidden overflow-y-auto rounded focus-visible:outline-2 focus-visible:outline-sky-300 pr-2"
+        className="h-72 overflow-x-hidden overflow-y-auto rounded pr-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 xl:h-auto xl:min-h-48 xl:grow xl:basis-0"
       >
         {body}
       </div>
