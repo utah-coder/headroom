@@ -9,3 +9,8 @@ infra/cdk-outputs.json
 *.json.tmp
 .DS_Store
 Thumbs.db
+# Generated sanity series (rebuilt by python -m sim.run_scenarios)
+data/processed/
+# Kiro task-runner state
+.kiro/specs/*/.config.kiro
+.kiro/specs/*/tasks.meta.json
