@@ -271,7 +271,8 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
             </p>
             <p>
               The data center, its jobs, the battery and flywheel, and the tariff are simulated and illustrative.
-              Every number is computed ahead of time; this page makes no network calls after it loads.
+              Every number on the page is computed ahead of time. The only network call after it loads is a question
+              you send to the what-if analyst, whose answer comes from a fresh run of the same engine.
             </p>
           </div>
         </div>

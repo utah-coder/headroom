@@ -11,5 +11,8 @@ export const SCENARIOS: readonly ScenarioName[] = ['peak', 'sun'];
 // (Requirements 20.8, 24.9).
 export const ANIMATED_ZOOM: boolean = true;
 
+// Longest what-if question. Must equal sim/config.ANALYST_QUESTION_MAX_CHARS (tested).
+export const WHATIF_MAX_CHARS = 400;
+
 // Public GitHub repository, linked from the Footer (Requirement 22.4).
 export const REPO_URL = 'https://github.com/utah-coder/headroom';
