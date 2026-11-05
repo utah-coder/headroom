@@ -309,3 +309,15 @@ The entries below were seeded from the approved design before implementation sta
 - **Rationale:** The first real deploy failed: CloudFront rejected the custom allow list with "The parameter Headers contains x-amz-content-sha256 that is not allowed". `cdk synth` can't catch this, so CI passed. AWS documents the managed policy as intended for Lambda function URLs: it forwards all viewer headers except `Host`, and it lists `CloudFront-Viewer-Address` among the viewer location headers it adds. Dropping only the rejected header was rejected, because nothing documents that an allow list without it still reaches the signer. The cost is that cookies and query strings now reach the Lambda too; the handler reads neither.
 - **Not verified:** the deploy's smoke test is still the first real test of a signed POST. `CloudFront-Viewer-Address` arriving under this policy comes from the docs, not a test. If it were missing, every visitor would share one hourly bucket, which is stricter; the daily cap doesn't depend on it.
 - **Affected component:** `infra/lib/site-stack.ts`.
+
+### 2026-11-05 08:49 MT: What-if panel presented as real-time AI (owner request)
+
+- **Decision:**
+  1. The owner removed "Written by Claude. Code checked that every figure came from the engine." as irrelevant for the demo, and the panel's intro no longer repeats that claim. This narrows item 4 of the 2026-11-04 what-if entry: the source line now appears only on a fallback. `analyst/verify.py` and the README's description of it are unchanged.
+  2. The engine-only note stays. It's the one case where the prose didn't come from the AI, and the panel now advertises AI, so hiding it would mislead.
+  3. The panel gets a sky border and a "Real-time AI" badge, and the Guide gets a "Real-time AI" paragraph that points to it in plain text, because Requirement 22.8 allows no in-app links.
+  4. "Real-time" describes the AI call and the engine rerun, not the data. The copy says the charts replay precomputed results, so the page still makes no claim of real-time grid data (2026-10-28 12:20 entry).
+- **Not verified:** "in seconds" rests on the 3 to 9 s measured locally on Haiku 4.5. Deployed latency, including Lambda cold start, hasn't been measured against this copy. Browser checks used a stubbed reply, not a live model.
+- **Layout:** at 1920x1080 with the guide hidden, chart bottom 860 px against the footer at 1,026 px (Requirement 22.9). No horizontal scroll at 375 px.
+- **Tests:** vitest 98, unchanged.
+- **Affected component:** `web/src/components/WhatIfPanel.tsx`, `web/src/components/Guide.tsx`.
