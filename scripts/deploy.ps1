@@ -17,8 +17,8 @@
        value from .env in every file under web/dist. Matching paths are
        printed; the key value never is.
     4. CDK deploy: npm ci, then
-       npx cdk deploy --require-approval never --outputs-file cdk-outputs.json,
-       in infra/. Afterwards the same secret grep runs over infra/cdk.out as a
+       npx cdk deploy --require-approval never --outputs-file cdk-outputs.json
+       -c headroom:analyst=false, in infra/ (static site only). Afterwards the same secret grep runs over infra/cdk.out as a
        defence-in-depth check.
     5. Print SiteUrl from infra/cdk-outputs.json, then run scripts/smoke.ps1
        against it with the BucketRegionalDomainName output.
@@ -168,7 +168,9 @@ try {
   Invoke-Step 'npm ci (infra)' { npm ci } -WorkingDirectory $infraDir
   $outputsPath = Join-Path $infraDir 'cdk-outputs.json'
   if (Test-Path -LiteralPath $outputsPath) { Remove-Item -LiteralPath $outputsPath }   # never read stale outputs
-  Invoke-Step 'cdk deploy' { npx cdk deploy --require-approval never --outputs-file cdk-outputs.json } -WorkingDirectory $infraDir
+  # Static site only: this script never adds the what-if analyst's paid backend.
+  # scripts/cloudshell-deploy.sh deploys the analyst.
+  Invoke-Step 'cdk deploy' { npx cdk deploy --require-approval never --outputs-file cdk-outputs.json -c headroom:analyst=false } -WorkingDirectory $infraDir
 
   # Defence in depth: the key cannot reach infra/ by construction, but check the synth output anyway.
   Invoke-SecretGrep -Name 'Secret grep (infra/cdk.out)' -Directory (Join-Path $infraDir 'cdk.out') -EnvPath $envPath

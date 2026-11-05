@@ -6,6 +6,7 @@ node_modules/
 cdk.out/
 web/dist/
 infra/cdk-outputs.json
+infra/build/
 *.json.tmp
 .DS_Store
 Thumbs.db

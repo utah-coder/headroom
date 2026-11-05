@@ -292,7 +292,7 @@ def build_scenario_full(name: str,
         requested_shed_kw=float(DR_SHED_KW), cap_kw=None, seed=seed,
     )
     base = run_baseline(inp)
-    inp = dataclasses.replace(inp, cap_kw=grid_import_cap_kw(base, dr_start))
+    inp = dataclasses.replace(inp, cap_kw=grid_import_cap_kw(base, dr_start, inp.requested_shed_kw))
 
     try:
         head = run_headroom(inp, move_enabled=config.ENABLE_MOVE_REGION)

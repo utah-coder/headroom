@@ -5,6 +5,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct, IConstruct } from 'constructs';
+import { Analyst } from './analyst';
 
 export const PROJECT_TAG = { key: 'Project', value: 'headroom' } as const;
 
@@ -61,6 +62,55 @@ export class HeadroomSiteStack extends cdk.Stack {
         ttl: cdk.Duration.seconds(0),
       })),
     });
+
+    // The what-if analyst. Off with -c headroom:analyst=false, for an account that
+    // blocks Lambda or Bedrock: the rest of the site doesn't depend on it, and the
+    // panel says it isn't connected.
+    const context = (name: string, fallback: string): string =>
+      String(this.node.tryGetContext(`headroom:${name}`) ?? fallback);
+    if (context('analyst', 'true') !== 'false') {
+      const concurrency = context('analystConcurrency', '');
+      const analyst = new Analyst(this, 'Analyst', {
+        model: context('analystModel', 'anthropic.claude-opus-5-5'),
+        route: context('analystRoute', 'mantle'),
+        region: context('analystRegion', this.region),
+        effort: context('analystEffort', 'medium'),
+        dailyCap: context('analystDailyCap', '100'),
+        hourlyPerVisitor: context('analystHourlyPerVisitor', '10'),
+        reservedConcurrency: concurrency === '' ? undefined : Number(concurrency),
+      });
+
+      // CloudFront-Viewer-Address is set by CloudFront and can't be spoofed by the
+      // viewer. Host must not reach a function URL. x-amz-content-sha256 is required
+      // for OAC to sign a POST body.
+      const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'AnalystOriginRequest', {
+        comment: 'Headroom what-if analyst',
+        headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
+          'CloudFront-Viewer-Address',
+          'content-type',
+          'x-amz-content-sha256',
+        ),
+        queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
+        cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
+      });
+
+      distribution.addBehavior(
+        '/api/*',
+        origins.FunctionUrlOrigin.withOriginAccessControl(analyst.url, {
+          readTimeout: cdk.Duration.seconds(60),
+        }),
+        {
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy,
+          responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+        },
+      );
+
+      // scripts/cloudshell-deploy.sh checks this refuses direct calls.
+      new cdk.CfnOutput(this, 'AnalystFunctionUrl', { value: analyst.url.url });
+    }
 
     // Req 1.7, 1.8: upload web/dist and invalidate /* on every deploy.
     // no-cache makes browsers revalidate on every load (a 304 when unchanged).

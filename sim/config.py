@@ -112,5 +112,31 @@ MOVE_DELAY_SLOTS = 2                       # ILLUSTRATIVE (30 min)
 IDLE_CAPACITY_PCT = (0, 30)                # ILLUSTRATIVE (SIMULATED per region-hour)
 ALT_REGION_PRICE_PER_KWH = 0.05            # ILLUSTRATIVE
 
+# --- What-if analyst: the inputs a question may change, (min, max) inclusive.
+# A value outside these ranges is rejected before the engine runs.
+WHATIF_BOUNDS = {  # ILLUSTRATIVE: wide enough for "what if" questions, narrow enough to stay physical
+    "demand_charge_usd_per_kw": (0.0, 100.0),     # ILLUSTRATIVE
+    "onpeak_usd_per_kwh": (0.0, 1.0),             # ILLUSTRATIVE
+    "offpeak_usd_per_kwh": (0.0, 1.0),            # ILLUSTRATIVE
+    "carbon_usd_per_t": (0.0, 500.0),             # ILLUSTRATIVE
+    "battery_power_kw": (500.0, 20_000.0),        # ILLUSTRATIVE
+    "battery_capacity_kwh": (1_000.0, 80_000.0),  # ILLUSTRATIVE
+    "flywheel_power_kw": (500.0, 8_000.0),        # ILLUSTRATIVE
+    "flywheel_capacity_kwh": (100.0, 4_000.0),    # ILLUSTRATIVE
+    "dr_shed_kw": (500.0, 10_000.0),              # ILLUSTRATIVE
+    "move_fee_usd": (0.0, 1_000.0),               # ILLUSTRATIVE
+    "alt_region_usd_per_kwh": (0.0, 1.0),         # ILLUSTRATIVE
+}
+
+# --- What-if analyst: limits on the public endpoint (overridable per deploy)
+ANALYST_QUESTION_MAX_CHARS = 400           # ILLUSTRATIVE
+ANALYST_DAILY_QUESTION_CAP = 100           # ILLUSTRATIVE: hard stop on model spend, whole site, per UTC day
+ANALYST_HOURLY_PER_VISITOR = 10            # ILLUSTRATIVE
+ANALYST_ANSWER_MAX_CHARS = 1200            # ILLUSTRATIVE
+ANALYST_MAX_TOKENS = 4000                  # ILLUSTRATIVE: per model call, includes any thinking
+ANALYST_CALL_TIMEOUT_S = 25                # ILLUSTRATIVE: one model call
+ANALYST_TIME_BUDGET_S = 50                 # ILLUSTRATIVE: whole question; CloudFront gives up at 60 s
+ANALYST_RETRY_MIN_S_LEFT = 15              # ILLUSTRATIVE: skip the rewrite if less time than this remains
+
 # --- Output rounding (decimal places)
 ROUND = dict(kw=1, mw=1, carbon=1, price=4, pct=1, usd=2, t=3)  # ILLUSTRATIVE

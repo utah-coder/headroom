@@ -6,7 +6,33 @@ Where should this kilowatt-hour come from?
 
 Headroom models a simulated 10 MW AI cluster in PacifiCorp East (EIA code `PACE`). For every flexible training job in every 15-minute slot, it picks one route: run from the grid now, run from on-site storage (battery + flywheel) now, defer to later, or move to another region (`BPAT` or `CISO`). It then shows how much grid capacity the site gives back to the utility during stress hours, plus dollars saved and CO₂ avoided (average intensity, not marginal).
 
-All numbers are precomputed in Python from real EIA-930 grid data and a labeled simulated site model, written to static JSON, and served from a private S3 bucket through CloudFront. The page loads its data once and makes no network calls after that.
+The page's numbers are precomputed in Python from real EIA-930 grid data and a labeled simulated site model, written to static JSON, and served from a private S3 bucket through CloudFront. The page loads its data once. The only network call after that is a question someone sends to the [what-if analyst](#what-if-analyst), and every other panel works without it.
+
+## What-if analyst
+
+Ask "what if the demand charge doubled?" and the real scheduler reruns on the changed inputs. The AI never does the maths:
+
+| Step | Done by | What happens |
+|---|---|---|
+| 1. Understand | Claude on Amazon Bedrock | Turns the question into inputs, constrained by a JSON schema. |
+| 2. Validate | Code (`sim/whatif.py`) | Rejects anything unknown or out of range before the engine runs. |
+| 3. Compute | Code (the same engine) | Builds the scenario with and without the change. With no change, the result equals the committed scenario files. |
+| 4. Explain | Claude on Amazon Bedrock | Describes the result, quoting figures only by id, such as `{{whatif.usd_saved}}`. |
+| 5. Verify | Code (`analyst/verify.py`) | Rejects a draft containing any figure of its own, whether digits or words like "twice". It allows one rewrite, then falls back to an answer written by code. |
+
+So every number a reader sees comes from the engine. The check covers figures, not interpretation: a draft can still describe correct figures poorly, so the panel always shows the engine's table beside the prose.
+
+**Limits:** 100 questions a day across the site and 10 an hour per visitor, enforced in DynamoDB before any model call. If the counters can't be reached, questions are refused.
+
+**Adjustable inputs:** demand charge, on-peak and off-peak prices, carbon price, battery and flywheel power and capacity, demand-response cut, the region-move fee and price, and whether jobs may move at all. Ranges are in `WHATIF_BOUNDS` in `sim/config.py`.
+
+Run it locally against real Bedrock (each question costs a little):
+
+```powershell
+pip install -r analyst\requirements.txt
+python -m analyst.local --model <model-id> --route <mantle|invoke>
+npm --prefix web run dev
+```
 
 ## Real vs simulated
 
@@ -83,8 +109,40 @@ To reuse the existing scenario files without rerunning the simulation:
 .\scripts\deploy.ps1 -SkipSim
 ```
 
+`deploy.ps1` deploys the static site only. It never creates the analyst's backend.
+
 ### Run the tests
 
 ```powershell
 python -m pytest
+```
+
+## Deploy from AWS CloudShell
+
+This deploys into whichever account and region CloudShell is open in, including the what-if analyst. It needs only CloudShell: no Docker, no local credentials and no EIA key, because it uses the committed scenario files. You run it by hand, and it asks before creating anything.
+
+```bash
+git clone -b <branch> https://github.com/utah-coder/headroom.git ~/headroom
+```
+
+```bash
+cd ~/headroom && bash scripts/cloudshell-deploy.sh
+```
+
+**What it does:** checks Node (installing Node 22 into `~/node` if needed), runs `scripts/bedrock-probe.sh` to find a Claude model the account can actually call, builds under `/tmp`, bootstraps CDK if needed, deploys, then runs a smoke test that includes one real question.
+
+**Why it probes:** model access varies by account, and a listed model can still answer "not available for this account". If no model answers, the script deploys the static site without the analyst.
+
+**Options:**
+- `--no-analyst` deploys only the static site, with no Lambda, DynamoDB or Bedrock.
+- `--yes` skips the confirmation.
+
+**Time:** allow up to 30 minutes. CloudShell can time out when idle, so press a key now and then. If it disconnects, CloudFormation keeps going: reconnect and rerun the script.
+
+**To change limits or the model,** pass context to `cdk deploy`: `headroom:analystDailyCap`, `headroom:analystHourlyPerVisitor`, `headroom:analystModel`, `headroom:analystRoute`, `headroom:analystRegion`, `headroom:analystEffort`, `headroom:analystConcurrency`.
+
+**To remove it:**
+
+```bash
+cd ~/headroom/infra && npx cdk destroy --force -c headroom:region=$AWS_REGION -c headroom:analyst=false
 ```
