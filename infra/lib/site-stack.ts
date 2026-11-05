@@ -80,20 +80,6 @@ export class HeadroomSiteStack extends cdk.Stack {
         reservedConcurrency: concurrency === '' ? undefined : Number(concurrency),
       });
 
-      // CloudFront-Viewer-Address is set by CloudFront and can't be spoofed by the
-      // viewer. Host must not reach a function URL. x-amz-content-sha256 is required
-      // for OAC to sign a POST body.
-      const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'AnalystOriginRequest', {
-        comment: 'Headroom what-if analyst',
-        headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
-          'CloudFront-Viewer-Address',
-          'content-type',
-          'x-amz-content-sha256',
-        ),
-        queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
-        cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
-      });
-
       distribution.addBehavior(
         '/api/*',
         origins.FunctionUrlOrigin.withOriginAccessControl(analyst.url, {
@@ -103,7 +89,11 @@ export class HeadroomSiteStack extends cdk.Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy,
+          // The managed policy AWS intends for function URLs. Host must not reach a
+          // function URL. It also forwards x-amz-content-sha256, which OAC needs to
+          // sign a POST body and which a custom allow list is not permitted to name,
+          // and CloudFront-Viewer-Address, which the per-visitor limit reads.
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
         },
       );
