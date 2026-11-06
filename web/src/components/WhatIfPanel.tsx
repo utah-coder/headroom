@@ -18,10 +18,7 @@ const EXAMPLES = [
   'What if jobs couldn’t move to other regions?',
 ];
 
-const SOURCE_NOTE = {
-  model_verified: 'Written by Claude. Code checked that every figure came from the engine.',
-  engine_only: 'Written by code from engine figures. The AI text was unavailable or failed the figure check.',
-} as const;
+const ENGINE_ONLY_NOTE = 'Written by code from engine figures. The AI text was unavailable or failed the figure check.';
 
 function Table({ caption, rows, withChange }: { caption: string; rows: readonly WhatIfRow[]; withChange: boolean }) {
   return (
@@ -96,14 +93,15 @@ function GridChart({ series }: { series: WhatIfSeries }) {
 
 function Result({ reply }: { reply: WhatIfReply }) {
   if (reply.status === 'answered') {
-    const verified = reply.answer_source === 'model_verified';
     return (
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
           <p className="text-base text-slate-100">{reply.answer}</p>
-          <p className="text-sm" style={{ color: verified ? ROUTE_COLORS.STORAGE_NOW : ROUTE_COLORS.DEFER }}>
-            {SOURCE_NOTE[reply.answer_source]}
-          </p>
+          {reply.answer_source === 'engine_only' && (
+            <p className="text-sm" style={{ color: ROUTE_COLORS.DEFER }}>
+              {ENGINE_ONLY_NOTE}
+            </p>
+          )}
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="flex min-w-0 flex-col gap-3">
@@ -144,14 +142,19 @@ export function WhatIfPanel({ scenario }: { scenario: ScenarioName }) {
   };
 
   return (
-    <section aria-labelledby="whatif-heading" className="flex flex-col gap-3 rounded-lg bg-slate-900 p-4">
+    <section aria-labelledby="whatif-heading" className="flex flex-col gap-3 rounded-lg border border-sky-300 bg-slate-900 p-4">
       <div className="flex flex-col gap-1">
-        <h2 id="whatif-heading" className="text-base font-semibold text-slate-100">
-          Ask what if
-        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id="whatif-heading" className="text-base font-semibold text-slate-100">
+            Ask what if
+          </h2>
+          <span className="rounded-full bg-sky-300 px-2 py-0.5 text-xs font-semibold text-slate-950">Real-time AI</span>
+        </div>
+        <p className="text-base text-slate-100">Fine-tune Headroom to your own assumptions, live.</p>
         <p className="text-sm text-slate-300">
-          Change the tariff, carbon price, storage, demand-response cut or region moves. Claude turns your question into
-          inputs, the real engine reruns on them, and code checks that every figure in the answer came from the engine.
+          The panels above replay precomputed results. This one runs when you ask: change the tariff, carbon price,
+          storage, demand-response cut or region moves in plain English. Claude turns your question into inputs and the
+          real engine reruns on them, so you see the effect in seconds.
         </p>
       </div>
 

@@ -309,3 +309,64 @@ The entries below were seeded from the approved design before implementation sta
 - **Rationale:** The first real deploy failed: CloudFront rejected the custom allow list with "The parameter Headers contains x-amz-content-sha256 that is not allowed". `cdk synth` can't catch this, so CI passed. AWS documents the managed policy as intended for Lambda function URLs: it forwards all viewer headers except `Host`, and it lists `CloudFront-Viewer-Address` among the viewer location headers it adds. Dropping only the rejected header was rejected, because nothing documents that an allow list without it still reaches the signer. The cost is that cookies and query strings now reach the Lambda too; the handler reads neither.
 - **Not verified:** the deploy's smoke test is still the first real test of a signed POST. `CloudFront-Viewer-Address` arriving under this policy comes from the docs, not a test. If it were missing, every visitor would share one hourly bucket, which is stricter; the daily cap doesn't depend on it.
 - **Affected component:** `infra/lib/site-stack.ts`.
+
+### 2026-11-05 08:49 MT: What-if panel presented as real-time AI (owner request)
+
+- **Decision:**
+  1. The owner removed "Written by Claude. Code checked that every figure came from the engine." as irrelevant for the demo, and the panel's intro no longer repeats that claim. This narrows item 4 of the 2026-11-04 what-if entry: the source line now appears only on a fallback. `analyst/verify.py` and the README's description of it are unchanged.
+  2. The engine-only note stays. It's the one case where the prose didn't come from the AI, and the panel now advertises AI, so hiding it would mislead.
+  3. The panel gets a sky border and a "Real-time AI" badge, and the Guide gets a "Real-time AI" paragraph that points to it in plain text, because Requirement 22.8 allows no in-app links.
+  4. "Real-time" describes the AI call and the engine rerun, not the data. The copy says the charts replay precomputed results, so the page still makes no claim of real-time grid data (2026-10-28 12:20 entry).
+- **Not verified:** "in seconds" rests on the 3 to 9 s measured locally on Haiku 4.5. Deployed latency, including Lambda cold start, hasn't been measured against this copy. Browser checks used a stubbed reply, not a live model.
+- **Layout:** at 1920x1080 with the guide hidden, chart bottom 860 px against the footer at 1,026 px (Requirement 22.9). No horizontal scroll at 375 px.
+- **Tests:** vitest 98, unchanged.
+- **Affected component:** `web/src/components/WhatIfPanel.tsx`, `web/src/components/Guide.tsx`.
+
+### 2026-11-06 05:40 MT: Forecast and stress test (owner request)
+
+- **Decision:**
+  1. **First slice of the owner's planning workflow:** steps 3 (forecast) and 5 (stress-test). The other steps aren't built. Steps 2 and 7 can't be real without data from an actual site, because `sim/jobs.py` draws run times at random and there are no meter readings.
+  2. **Published numbers don't change.** `scheduler.PlanningGap` holds everything the planner doesn't know, and its default changes nothing. The committed scenario files still match a fresh build, and a test requires the stress file's `published` row to equal them. Results go in a separate `stress.json`, because the page's KPIs have a different meaning (foresight) and the file is optional for the page.
+  3. **The split is at `begin_slot`.** With a forecast, `_believe_carbon` overwrites the arrays every route price reads, so the rest of the decision path is untouched. The current hour counts as known, as a live grid feed would show it. Two tests pin this: with a forecast, changing actual carbon from slot 100 on changes no earlier route; without one, the same change does.
+  4. **Forecast method, chosen by backtest:** a 7-day mean by hour of day, plus the latest hour's error fading by 0.95 per hour ahead. Mean absolute error over leads of 1, 3, 6, 12 and 24 hours, in g/kWh:
+
+     | Method | PACE | BPAT | CISO |
+     |---|---|---|---|
+     | Same hour yesterday | 62.8 | 8.7 | 23.1 |
+     | Latest value held flat | 92.9 | 6.8 | 49.2 |
+     | Chosen: 7-day profile, 0.95 decay | 44.5 | 5.7 | 18.5 |
+     | 14-day profile, 0.95 decay | 44.4 | 5.6 | 18.1 |
+     | Ridge regression in numpy, retrained daily | 44.9 | 5.6 | 17.0 |
+
+     Ridge matches the chosen method on PACE and wins by about 8% on CISO, which only prices moves. That didn't justify the extra code and the numeric noise between machines (14:41 MT entry). 7 days was chosen over 14 because the sun window has only 4 days of history. **Limits:** the decay and history length were picked on the same four months they're scored on. At 12 and 24 hours ahead, "same hour yesterday" beats this forecast on CISO (22.6 vs 23.2 and 25.4). Bands aim for 80% and measure 77 to 81% on PACE, about 71% on BPAT and 73 to 78% on CISO, so they run slightly narrow. Sun's bands are built from about 4 days of errors, so they miss more: 28 of 47 hours inside for carbon and 18 of 48 for demand, and the panel says why.
+  5. **Demand isn't forecast again.** EIA's `DF` is already the utility's forecast and the planner already reads it, so it's only measured: over 2,928 hours it runs 6.1% high on average, with a 7.8% mean absolute error.
+  6. **Run-time error is hidden from both policies' plans but paid by both.** A job that runs long looks finished when its estimate runs out, then shows one more slot at a time, because a real site can't see how much is left. Deadlines stay tied to the estimate. The demand-response cap stays at its undisturbed value.
+  7. **A missed cut is a result in stress runs** (`soft_dr`), not a `DrInfeasibleError`. Published builds still reject it.
+  8. **Draws:** 100 per random family, on the existing per-purpose `rng_for` streams, across a process pool. Results come back in task order, and a test requires the same output with 1 and 2 workers.
+  9. **No outage probabilities.** Nothing in this repo measures them. The "All of it at once" family always includes every failure, and the page says the spread isn't a likelihood.
+  10. **Precision follows the scenario files.** A first pass used whole dollars, so one run read $29,333 in this panel and $29,334 in the KPI row. A test now requires the same figures.
+  11. **Chart colors** are sky-600 and orange-600, which pass `validate_palette.js` on slate-900. The route sky and slate-400 failed its normal-vision floor (13.7 against 15).
+- **Results (seed 42):**
+
+  | Test | Peak: saved, median (middle 80%) | Sun: saved, median (middle 80%) |
+  |---|---|---|
+  | As published | $29,334 | $19,896 |
+  | Real carbon forecast | $9,266 | $19,893 |
+  | Jobs run long or short | $16,222 ($1,669 to $33,060) | $30,147 ($14,866 to $49,295) |
+  | Battery fails at a random time | $9,266 ($3,912 to $28,447) | $19,893 ($19,763 to $26,500) |
+  | Battery fails during the event | $3,869 | $26,656 |
+  | Regions stop taking jobs | $9,266 ($3,148 to $21,791) | $19,893 ($19,862 to $26,575) |
+  | All at once | $12,035 (-$805 to $33,259) | $30,329 ($17,457 to $49,144) |
+
+- **What the results mean, checked before writing any copy:**
+  - **Savings are about 90% demand charge** in both published runs. In peak, the forecast shifts load, the battery reaches its 10% floor before Tuesday's peak, and the site peak goes from 13,299 kW to 14,391 kW, which is $19,656 of the $20,068 drop.
+  - **Peak's drop isn't typical.** Across 57 replay windows the median change from foresight to forecast is -$23, with 22 lower, 14 higher and 21 within $100. Single windows range from -$20,170 to +$15,532, so peak is close to the worst case. The planner's carbon foresight matters little on average and a lot in any one window.
+  - **The two chosen scenarios aren't flattering.** Their savings sit below the replay's median of $35,619 with the forecast. One window of 57 loses money. The tuning from the 2026-10-27 19:33 MT entry used only those two windows, so the replay is the first test outside them. Each window draws its own jobs, so this spread mixes job timing with grid conditions; the two weren't separated.
+  - **Longer runs raise savings because baseline's bill rises more.** In peak the median bill goes from $286,207 to $319,679 and baseline's from $295,473 to $336,942.
+  - **A battery failure can raise savings only because a missed cut has no price here.** In sun, a battery out during the event keeps its energy for the later peak and saves $26,656, while missing the cut by 1,398 kW. The program's penalties aren't modeled and no figure was invented for them.
+  - **Late demand-response events are a limit the chosen windows never exercise.** The cut is missed in 5 of the 25 windows whose event starts in the last 8 hours, and in none of the 32 earlier ones (6 of 57 with foresight). In all 5, the battery and flywheel were at their 10% floors at the worst slot, while Headroom's load was below baseline's. So the cause is storage running out, not load piling up above baseline. In one of them (Aug 17) the cap is below inference load alone, because baseline happened to be low when the event began. A published build would reject these 5 windows.
+- **Not tested:** surprise demand-response events (the planner knows the event from slot 0), arrivals that differ from the forecast, inference that differs from its profile, moved jobs being interrupted by a region outage, and overruns using more remote capacity than booked.
+- **Not verified:** nothing has been deployed. `python -m sim.stress --check` has run only on Windows with Python 3.12. CI runs it on Linux with Python 3.11 for the first time on the next push, and that is the first test of the file's cross-machine match, which caught `np.dot` noise once before. Its runtime on a CI runner is unknown; it's 2 minutes on 8 local cores. The analyst bundle copies all of `sim/`, so it gains these two modules, but it doesn't import them, and `check_analyst_bundle.py` wasn't run locally.
+- **Layout:** the panel sits between the chart row and the what-if panel, below the fold. At 1920x1080 with the guide hidden, chart bottom 860 px against the footer at 1,026 px, unchanged (Requirement 22.9). No horizontal page scroll at 375 px; the test table scrolls inside its own box.
+- **Tests:** pytest 776 (was 724), vitest 109 (was 98). `sim.stress --check` runs in CI.
+- **Affected component:** `sim/forecast.py` and `sim/stress.py` (new), `sim/scheduler.py` (`PlanningGap`, `JobState.hidden_min`, `_believe_carbon`), `sim/run_scenarios.py` (`scenario_inputs`), `sim/config.py`, `sim/tests/test_forecast_stress.py` (new), `web/public/scenarios/stress.json` (new), `web/src/stressTypes.ts`, `web/src/data/loadStress.ts`, `web/src/lib/stressView.ts`, `web/src/lib/stressView.test.ts` and `web/src/components/StressPanel.tsx` (new), `web/src/App.tsx`, `web/src/lib/colors.ts`, `web/src/lib/time.ts`, `.github/workflows/ci.yml`, `README.md`, `HANDOFF.md`.

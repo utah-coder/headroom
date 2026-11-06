@@ -71,6 +71,11 @@ const WHY_IT_MATTERS =
   "time. Today it replays a past summer so you can watch its hardest days. The same engine could run on EIA's " +
   'live feed.';
 
+const REAL_TIME_AI =
+  'The charts replay precomputed results, but the Ask what if panel at the bottom of this page runs live. Ask a ' +
+  'question in plain English, and Claude sets up the change and the engine reruns on it, so you can fine-tune ' +
+  'the assumptions to your own site in seconds.';
+
 const SCENARIO_TEXT: Record<ScenarioName, string> = {
   peak: "Peak week: the 48 hours around PacifiCorp East's highest demand hour of summer 2026.",
   sun: "Sunny day: the 48 hours with PacifiCorp East's highest solar share of summer 2026.",
@@ -208,12 +213,15 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
             </li>
           ))}
         </ol>
-        <div className="grid gap-x-6 gap-y-2 text-sm text-slate-300 md:grid-cols-2">
+        <div className="grid gap-x-6 gap-y-2 text-sm text-slate-300 md:grid-cols-3">
           <p>
             <span className="font-semibold text-slate-100">What’s real, what’s simulated:</span> {WHAT_IS_REAL}
           </p>
           <p>
             <span className="font-semibold text-slate-100">Why it matters:</span> {WHY_IT_MATTERS}
+          </p>
+          <p>
+            <span className="font-semibold text-sky-300">Real-time AI:</span> {REAL_TIME_AI}
           </p>
         </div>
       </div>

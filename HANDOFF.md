@@ -122,3 +122,10 @@ The demo is frozen. Make only fixes, documentation changes and redeploys; add no
 - **Never add a figure to model text by hand or relax `analyst/verify.py` to make a draft pass.** Fix the prompt instead.
 - **Keep constants out of function defaults.** `sim/whatif.py` overlays values on module globals, and a default argument binds at import, so it silently ignores the overlay (`grid_import_cap_kw` did this).
 - **The handler must never return 403 or 404:** CloudFront rewrites both to `index.html` with status 200.
+
+## Update, 2026-11-06: the forecast and stress test
+
+- **New:** `sim/forecast.py`, `sim/stress.py`, `web/public/scenarios/stress.json` and the "How sturdy are the savings?" panel. See `DECISIONS.md`, 2026-11-06, and the README's "Stress test".
+- **A commit that changes engine output must also rebuild the stress file:** run `python -m sim.stress` (about 2 minutes) and commit the result. CI's `python -m sim.stress --check` fails otherwise. pytest's own check covers only the single runs and two replay windows.
+- **`PlanningGap` must stay a no-op by default.** Published runs depend on it, and the committed scenario tests will fail if it isn't.
+- **Don't read the spread as a probability.** The run-time and outage sizes are assumptions, and the page says so.

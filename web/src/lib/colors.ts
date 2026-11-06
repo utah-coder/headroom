@@ -33,6 +33,10 @@ export const COST_PART_COLORS = {
   fee_usd: '#e879f9', // fuchsia-400
 } as const;
 
+/** Stress panel charts: the tested run and the published run it's compared with. */
+export const CHART_FOCUS = '#0284c7'; // sky-600
+export const CHART_REFERENCE = '#ea580c'; // orange-600
+
 export const BACKGROUNDS = {
   page: SLATE[950],
   panel: SLATE[900],

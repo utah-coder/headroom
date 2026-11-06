@@ -7,6 +7,7 @@ import { Guide, type GuideStep } from './components/Guide';
 import Header from './components/Header';
 import { KpiRow } from './components/KpiRow';
 import { MainChart } from './components/MainChart';
+import { StressPanel } from './components/StressPanel';
 import { WhatIfPanel } from './components/WhatIfPanel';
 import { ANIMATED_ZOOM } from './config';
 import { loadScenarios, type Loaded } from './data/loadScenarios';
@@ -165,6 +166,9 @@ export default function App() {
           />
         </div>
         {/* Below the demo's fold on purpose, so the 1920x1080 fit above is unchanged. */}
+        <div data-area="stress" className="min-w-0 xl:col-span-3">
+          <StressPanel scenario={state.scenario} />
+        </div>
         <div data-area="whatif" className="min-w-0 xl:col-span-3">
           <WhatIfPanel scenario={state.scenario} />
         </div>

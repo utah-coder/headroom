@@ -112,6 +112,23 @@ MOVE_DELAY_SLOTS = 2                       # ILLUSTRATIVE (30 min)
 IDLE_CAPACITY_PCT = (0, 30)                # ILLUSTRATIVE (SIMULATED per region-hour)
 ALT_REGION_PRICE_PER_KWH = 0.05            # ILLUSTRATIVE
 
+# --- Forecasts (sim/forecast.py), using only hours already past
+FORECAST_HISTORY_DAYS = 7                  # ILLUSTRATIVE: picked by backtest (DECISIONS.md)
+FORECAST_RESIDUAL_DECAY = 0.95             # ILLUSTRATIVE: picked by backtest; share of the latest error kept per hour ahead
+FORECAST_MIN_HISTORY_HOURS = 24            # ILLUSTRATIVE
+FORECAST_MAX_LEAD_HOURS = 48               # ILLUSTRATIVE
+FORECAST_BAND_HISTORY_DAYS = 28            # ILLUSTRATIVE: past errors a confidence band is built from
+FORECAST_BAND_MIN_SAMPLES = 24             # ILLUSTRATIVE
+FORECAST_BAND_QUANTILES = (0.10, 0.90)     # ILLUSTRATIVE
+
+# --- Stress test (sim/stress.py). The draws are assumptions, not measurements of any real site.
+STRESS_SAMPLES = 100                       # ILLUSTRATIVE
+STRESS_RUNTIME_MEDIAN = 1.10               # ILLUSTRATIVE: typical true run time vs the estimate
+STRESS_RUNTIME_SIGMA = 0.25                # ILLUSTRATIVE: lognormal spread of that ratio
+STRESS_OUTAGE_HOURS = (2, 12)              # ILLUSTRATIVE: outage length, inclusive
+REPLAY_START_HOUR_UTC = 6                  # ILLUSTRATIVE: midnight in Denver in summer
+REPLAY_HISTORY_DAYS = 7                    # ILLUSTRATIVE: data kept back so forecasts have history
+
 # --- What-if analyst: the inputs a question may change, (min, max) inclusive.
 # A value outside these ranges is rejected before the engine runs.
 WHATIF_BOUNDS = {  # ILLUSTRATIVE: wide enough for "what if" questions, narrow enough to stay physical
