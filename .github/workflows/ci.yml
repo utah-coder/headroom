@@ -45,6 +45,11 @@ jobs:
       - name: build scenarios (offline, from committed cache)
         run: python -m sim.run_scenarios
 
+      # The stress file ships as committed, so it must match a fresh build. Runs apart from
+      # pytest because a full build makes over 900 engine runs.
+      - name: check stress results (offline, from committed cache)
+        run: python -m sim.stress --check
+
       # Must run before cdk synth: the stack bundles ../web/dist.
       - name: web build
         working-directory: web

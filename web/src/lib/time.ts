@@ -22,6 +22,13 @@ export function hhmmDenver(t: string | Date): string {
   return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
 }
 
+const denverDate = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', month: 'short', day: 'numeric' });
+
+/** Short date ("Jun 8") of an instant in America/Denver. */
+export function dateDenver(t: string | Date): string {
+  return denverDate.format(typeof t === 'string' ? new Date(t) : t);
+}
+
 const denverWeekday = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', weekday: 'long' });
 
 /** Weekday name ("Tuesday") of an instant in America/Denver. */

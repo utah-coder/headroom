@@ -58,6 +58,7 @@ from sim.grid import (
     TOTAL,
     HourlySeries,
     NoDataError,
+    SlotGrid,
     build_hourly,
     build_slots,
     select_dr_start,
@@ -93,6 +94,7 @@ __all__ = [
     "ScenarioBuild",
     "load_grid_data",
     "enabled_scenarios",
+    "scenario_inputs",
     "grid_import_cap_kw",
     "build_dr",
     "build_scenario",
@@ -231,6 +233,21 @@ def build_dr(inp: ScenarioInputs, head: PolicyResult) -> DrResult:
     )
 
 
+def scenario_inputs(name: str, window_start: datetime, data: GridData,
+                    seed: int) -> tuple[ScenarioInputs, SlotGrid]:
+    """Slots, jobs, inference, idle capacity and DR start for one window, with ``cap_kw`` unset."""
+    grid = build_slots(window_start, data.hourly, data.carbon)
+    jobs = generate(len(grid.slots), seed, name)
+    inference = inference_it_kw([g.t for g in grid.slots])
+    idle = {r: tuple(v) for r, v in idle_capacity_kw(WINDOW_HOURS, seed, name).items()}
+    dr_start = select_dr_start([g.pace_demand_mw for g in grid.slots], DR_DURATION_SLOTS)
+    return ScenarioInputs(
+        name=name, slots=grid.slots, jobs=tuple(jobs), inference_it_kw=tuple(inference),
+        idle_capacity_kw=idle, dr_start=dr_start, dr_slots=DR_DURATION_SLOTS,
+        requested_shed_kw=float(DR_SHED_KW), cap_kw=None, seed=seed,
+    ), grid
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -279,20 +296,9 @@ def build_scenario_full(name: str,
     seed = config.SEED if seed is None else seed
     built_at = _utc_now() if built_at is None else built_at
 
-    grid = build_slots(_window_start(name, data.hourly), data.hourly, data.carbon)
-    n = len(grid.slots)
-    jobs = generate(n, seed, name)
-    inference = inference_it_kw([g.t for g in grid.slots])
-    idle = {r: tuple(v) for r, v in idle_capacity_kw(WINDOW_HOURS, seed, name).items()}
-    dr_start = select_dr_start([g.pace_demand_mw for g in grid.slots], DR_DURATION_SLOTS)
-
-    inp = ScenarioInputs(
-        name=name, slots=grid.slots, jobs=tuple(jobs), inference_it_kw=tuple(inference),
-        idle_capacity_kw=idle, dr_start=dr_start, dr_slots=DR_DURATION_SLOTS,
-        requested_shed_kw=float(DR_SHED_KW), cap_kw=None, seed=seed,
-    )
+    inp, grid = scenario_inputs(name, _window_start(name, data.hourly), data, seed)
     base = run_baseline(inp)
-    inp = dataclasses.replace(inp, cap_kw=grid_import_cap_kw(base, dr_start, inp.requested_shed_kw))
+    inp = dataclasses.replace(inp, cap_kw=grid_import_cap_kw(base, inp.dr_start, inp.requested_shed_kw))
 
     try:
         head = run_headroom(inp, move_enabled=config.ENABLE_MOVE_REGION)

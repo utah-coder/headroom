@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from fractions import Fraction
 from typing import Literal
@@ -53,6 +53,7 @@ from sim.config import (
     DR_RESERVE_MARGIN,
     DR_STORAGE_SUPPORT_KW,
     FLYWHEEL,
+    HOME_REGION,
     IT_PEAK_KW,
     JOB_DURATION_MIN,
     JOB_DURATION_STEP_MIN,
@@ -84,6 +85,8 @@ __all__ = [
     "DEFER",
     "MOVE_REGION",
     "ScenarioInputs",
+    "PlanningGap",
+    "NO_GAP",
     "JobState",
     "SlotRun",
     "StorageFlows",
@@ -189,6 +192,34 @@ class ScenarioInputs:
 
 
 @dataclass(frozen=True)
+class PlanningGap:
+    """What the planner doesn't know: the difference between its beliefs and what happens.
+
+    The published scenarios use ``NO_GAP``: the planner reads actual carbon for its
+    whole look-ahead and knows every job's exact run time, as Requirement 11.4 allows.
+    ``sim/stress.py`` fills these in to measure how much of the result survives without
+    that foresight (DECISIONS.md, "Forecast and stress test").
+
+    * ``carbon_view(s)``: g/kWh per slot, by region, as believed at slot ``s``.
+    * ``hidden_run_min``: job id to true run time minus the ``duration_min`` everyone
+      planned on. Both policies see the same true run times.
+    * ``battery_out_slots``: the battery can't charge or discharge. No warning.
+    * ``move_blocked_slots``: other regions accept no new jobs. Jobs already moved keep running.
+    * ``soft_dr``: miss a demand-response cut storage can't cover and let the grid draw go
+      over the cap, instead of rejecting the plan with ``DrInfeasibleError``.
+    """
+
+    carbon_view: Callable[[int], Mapping[str, Sequence[float]]] | None = None
+    hidden_run_min: Mapping[str, int] = field(default_factory=dict)
+    battery_out_slots: frozenset[int] = frozenset()
+    move_blocked_slots: frozenset[int] = frozenset()
+    soft_dr: bool = False
+
+
+NO_GAP = PlanningGap()
+
+
+@dataclass(frozen=True)
 class SlotRun:
     """What one job did in one slot."""
 
@@ -214,14 +245,16 @@ class JobState:
     prev_route: str | None = None
     defer_target: int | None = None
     plan_deadline: int = 0
+    hidden_min: int = 0            # true remaining run time minus remaining_min (PlanningGap)
 
     @classmethod
-    def new(cls, job: TrainingJob, n_slots: int) -> "JobState":
+    def new(cls, job: TrainingJob, n_slots: int, hidden_min: int = 0) -> "JobState":
         """Fresh state; ``plan_deadline = min(deadline_min, N × SLOT_MINUTES)`` (DECISIONS.md)."""
         return cls(
             job=job,
             remaining_min=job.duration_min,
             plan_deadline=min(job.deadline_min, window_minutes(n_slots)),
+            hidden_min=hidden_min,
         )
 
     def runnable(self, s: int) -> bool:
@@ -238,7 +271,13 @@ class JobState:
             self.paused = True
 
     def run_slot(self, s: int) -> SlotRun:
-        """Run this job for slot ``s``, resuming it first if it was paused."""
+        """Run this job for slot ``s``, resuming it first if it was paused.
+
+        ``remaining_min`` is what the planner believes. A job that runs short simply
+        finishes early. One that runs long looks finished when its estimate runs out,
+        but isn't: the planner then sees one more slot of work at a time, because a real
+        site can tell a job hasn't finished but not how much is left.
+        """
         if s < self.job.arrival_slot:
             raise ValueError(f"job {self.job.id} cannot run in slot {s} before arrival "
                              f"slot {self.job.arrival_slot}")
@@ -248,12 +287,17 @@ class JobState:
             self.remaining_min += RESTART_PENALTY_MIN   # Requirement 10.10
             self.resumes += 1
             self.paused = False
-        u = slot_minutes_used(self.remaining_min)
+        u = slot_minutes_used(self.remaining_min + min(self.hidden_min, 0))
         self.started = True
         self.remaining_min -= u
         self.run_min += u
         kwh = it_kwh(self.job.power_kw, u)
         self.delivered_kwh += kwh
+        if self.hidden_min < 0 and self.remaining_min + self.hidden_min == 0:
+            self.remaining_min = self.hidden_min = 0     # ran short: done early
+        elif self.remaining_min == 0 and self.hidden_min > 0:
+            self.remaining_min = min(SLOT_MINUTES, self.hidden_min)  # ran long: not done yet
+            self.hidden_min -= self.remaining_min
         if self.remaining_min == 0:
             self.finish_min = s * SLOT_MINUTES + u
         return SlotRun(minutes=u, it_kw=self.job.power_kw * u / SLOT_MINUTES, it_kwh=kwh)
@@ -381,7 +425,7 @@ def _expected_finish_min(js: JobState, n_slots: int) -> int:
     """Finish time in minutes from window start, carrying unfinished work past the window."""
     if js.finish_min is not None:
         return js.finish_min
-    carry = js.remaining_min + (RESTART_PENALTY_MIN if js.paused else 0)
+    carry = js.remaining_min + js.hidden_min + (RESTART_PENALTY_MIN if js.paused else 0)
     return window_minutes(n_slots) + carry
 
 
@@ -591,16 +635,17 @@ def run(policy: Literal["baseline", "headroom", "naive"], inp: ScenarioInputs) -
     raise ValueError(f"unknown policy: {policy!r}")
 
 
-def run_baseline(inp: ScenarioInputs) -> PolicyResult:
+def run_baseline(inp: ScenarioInputs, *, gap: PlanningGap = NO_GAP) -> PolicyResult:
     """Every job runs on grid power continuously from arrival (Requirements 11.2, 13.2).
 
     No pauses, deferral or moves; Battery and Flywheel stay idle at their
     initial SOC; each job gets one ``GRID_NOW`` Decision at its arrival slot.
     Its reason's peak change is the kW by which that job lifts the slot's grid
-    draw above the highest grid draw of earlier slots.
+    draw above the highest grid draw of earlier slots. Only ``gap.hidden_run_min``
+    applies here: baseline plans nothing, so it has no beliefs to be wrong about.
     """
     n = inp.n_slots
-    states = [JobState.new(j, n) for j in inp.jobs]
+    states = [JobState.new(j, n, gap.hidden_run_min.get(j.id, 0)) for j in inp.jobs]
     inference_fac = inp.inference_fac
     bat_soc, fly_soc = _initial_soc_pct()
     out_slots: list[SlotResult] = []
@@ -872,8 +917,9 @@ class _HeadroomPlanner:
     ``alt_used`` ledger for every hour it runs there.
     """
 
-    def __init__(self, inp: ScenarioInputs, move_enabled: bool) -> None:
+    def __init__(self, inp: ScenarioInputs, move_enabled: bool, gap: PlanningGap = NO_GAP) -> None:
         self.inp = inp
+        self.gap = gap
         self.n = inp.n_slots
         self.inference_fac = inp.inference_fac
         self.base = np.array(self.inference_fac, dtype=float)
@@ -916,7 +962,9 @@ class _HeadroomPlanner:
         self.fly_spec = StorageSpec.from_config("flywheel", FLYWHEEL)
         self.bat: StorageState = self.bat_spec.initial_state()
         self.fly: StorageState = self.fly_spec.initial_state()
-        mean_ci = sum(g.carbon_g_per_kwh for g in inp.slots) / self.n
+        # The window's mean carbon is itself foresight, so a planner with a forecast uses that.
+        mean_ci = (sum(g.carbon_g_per_kwh for g in inp.slots) / self.n if gap.carbon_view is None
+                   else float(np.mean(gap.carbon_view(0)[HOME_REGION])))
         # $ per kWh drawn for charging (energy + carbon) of the energy in storage;
         # a weighted average updated on every charge.
         self.storage_cost_basis = (TARIFF_OFFPEAK_PER_KWH
@@ -941,6 +989,8 @@ class _HeadroomPlanner:
 
     def begin_slot(self, s: int) -> None:
         self.s = s
+        if self.gap.carbon_view is not None:
+            self._believe_carbon(s)
         self.h_end = min(self.n, s + LOOKAHEAD_SLOTS)            # Requirement 11.3
         self.fstress = tuple(forecast_stress(self.inp.slots, range(s, self.h_end)))
         # Release every reservation from slot s on. Only runnable jobs hold
@@ -960,6 +1010,21 @@ class _HeadroomPlanner:
         for r, unit in self.alt_unit.items():
             self.alt_eff[r][s:] = unit[persist]
             self.alt_eff_carbon_usd[r][s:] = self.alt_carbon_usd[r][persist]
+
+    def _believe_carbon(self, s: int) -> None:
+        """Replace actual carbon with what the planner believes at slot ``s``.
+
+        Everything that prices a route reads these arrays, directly or through the
+        ``eff_*`` copies that ``begin_slot`` makes next, so nothing else has to change.
+        """
+        believed = self.gap.carbon_view(s)   # type: ignore[misc]  # checked in begin_slot
+        self.unit_carbon_usd = (np.asarray(believed[HOME_REGION], dtype=float)
+                                * CARBON_SHADOW_USD_PER_T / _G_PER_T)
+        self.unit_cost = self.unit_price + self.unit_carbon_usd
+        for r in self.alt_unit:
+            self.alt_carbon_usd[r] = (np.asarray(believed[r], dtype=float)
+                                      * CARBON_SHADOW_USD_PER_T / _G_PER_T)
+            self.alt_unit[r] = ALT_REGION_PRICE_PER_KWH + self.alt_carbon_usd[r]
 
     def is_fstress(self, t: int) -> bool:
         return self.fstress[t - self.s]
@@ -1011,7 +1076,8 @@ class _HeadroomPlanner:
         later) and, when enabled, neither can MOVE_REGION (Requirements 11.9, 12.7)."""
         if _defer_deadline_ok(js, _first_defer_slot(self.s)):
             return False
-        return not (self.move_enabled and _move_deadline_ok(js, self.s))
+        return not (self.move_enabled and self.s not in self.gap.move_blocked_slots
+                    and _move_deadline_ok(js, self.s))
 
     # --- DR (design, "DR behaviour in routing", "Floors")
 
@@ -1083,6 +1149,8 @@ class _HeadroomPlanner:
         """
         if not self.move_enabled or js.moved_region is not None:
             return []
+        if self.s in self.gap.move_blocked_slots:
+            return []
         if not _move_deadline_ok(js, self.s):                       # Requirement 12.7
             return []
         start = self.s + MOVE_DELAY_SLOTS
@@ -1126,7 +1194,9 @@ class _HeadroomPlanner:
         k = start
         while js.remaining_min > 0:
             if k >= self.n:
-                raise self._fail(f"moved job {js.job.id} runs past the window")
+                if not self.gap.hidden_run_min:
+                    raise self._fail(f"moved job {js.job.id} runs past the window")
+                break                                  # ran long: finishes after the window
             fac = facility_kw(js.run_slot(k).it_kw)
             self.moved_fac[k] += fac
             kwh_by_slot[k] = fac * _SLOT_HOURS
@@ -1152,10 +1222,14 @@ class _HeadroomPlanner:
 
     def available_discharge_kw(self) -> float:
         """Battery + flywheel discharge kW for one slot, rating- and floor-limited."""
-        return (self.bat.max_discharge_kw(self.bat_spec, _SLOT_HOURS,
-                                          self._discharge_floor_kwh(self.bat_spec))
-                + self.fly.max_discharge_kw(self.fly_spec, _SLOT_HOURS,
-                                            self._discharge_floor_kwh(self.fly_spec)))
+        battery = (0.0 if self.battery_out() else
+                   self.bat.max_discharge_kw(self.bat_spec, _SLOT_HOURS,
+                                             self._discharge_floor_kwh(self.bat_spec)))
+        return battery + self.fly.max_discharge_kw(self.fly_spec, _SLOT_HOURS,
+                                                   self._discharge_floor_kwh(self.fly_spec))
+
+    def battery_out(self) -> bool:
+        return self.s in self.gap.battery_out_slots
 
     def cheap_slot(self) -> bool:
         """The slot's unit cost is within the cheapest CHARGE_RANK_FRACTION of H."""
@@ -1192,7 +1266,7 @@ class _HeadroomPlanner:
         s, h = self.s, _SLOT_HOURS
         bat_floor = self._floor_kwh(self.bat_spec)
         fly_floor = self._floor_kwh(self.fly_spec)
-        bat_left = self.bat.max_discharge_kw(self.bat_spec, h, bat_floor)
+        bat_left = 0.0 if self.battery_out() else self.bat.max_discharge_kw(self.bat_spec, h, bat_floor)
         fly_left = self.fly.max_discharge_kw(self.fly_spec, h, fly_floor)
         bat_d = fly_d = bat_c = fly_c = 0.0
         dr_kw = peak_kw = stress_kw = 0.0
@@ -1216,11 +1290,13 @@ class _HeadroomPlanner:
             dr_kw = max(0.0, load_kw - self.cap)
             limit = self.dr_storage_limit_kw()
             if self.cap < 0 or dr_kw > limit + _KW_TOL:
-                raise DrInfeasibleError(
-                    slot=s, scenario=self.inp.name,
-                    detail=(f"load {load_kw:.1f} kW − cap {self.cap:.1f} kW = {dr_kw:.1f} kW "
-                            f"exceeds the {limit:.1f} kW storage can discharge"
-                            if self.cap >= 0 else f"cap {self.cap} kW is negative"))
+                if not self.gap.soft_dr:
+                    raise DrInfeasibleError(
+                        slot=s, scenario=self.inp.name,
+                        detail=(f"load {load_kw:.1f} kW − cap {self.cap:.1f} kW = {dr_kw:.1f} kW "
+                                f"exceeds the {limit:.1f} kW storage can discharge"
+                                if self.cap >= 0 else f"cap {self.cap} kW is negative"))
+                dr_kw = min(dr_kw, self.available_discharge_kw())   # deliver what's there
             if s == self.dr_start:
                 fly_d = min(dr_kw * _DR_FLYWHEEL_START_FRACTION, fly_left)
             take(dr_kw - fly_d)
@@ -1239,7 +1315,7 @@ class _HeadroomPlanner:
             if bat_d == 0.0 and fly_d == 0.0 and s not in self.dr and not self.fstress[0]:
                 room = self.P - load_kw
                 if cheap and room > 0:
-                    bat_c = min(self.bat.max_charge_kw(self.bat_spec, h), room)
+                    bat_c = 0.0 if self.battery_out() else min(self.bat.max_charge_kw(self.bat_spec, h), room)
                     fly_ceil = self.fly_spec.initial_state().soc_kwh
                     fly_c = min(self.fly.max_charge_kw(self.fly_spec, h, fly_ceil), room - bat_c)
                     bat_c, fly_c = max(0.0, bat_c), max(0.0, fly_c)
@@ -1461,7 +1537,7 @@ def _headroom_decision(inp: ScenarioInputs, s: int, js: JobState, c: RouteCandid
 
 
 def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
-                 move_enabled: bool | None = None) -> PolicyResult:
+                 move_enabled: bool | None = None, gap: PlanningGap = NO_GAP) -> PolicyResult:
     """Greedy Headroom_Policy with a rolling 24 h look-ahead (Requirements 11.3–11.12, 11.16, 11.17).
 
     Per slot ``s``: release reservations, order runnable jobs (deadline-blocked
@@ -1490,12 +1566,15 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
 
     With ``trace=True`` the result carries a ``HeadroomTrace`` of every
     slot's candidates, costs, pre-storage load and ``P``.
+
+    ``gap`` separates what the planner believes from what happens (``PlanningGap``).
+    The default changes nothing, so published runs keep their foresight.
     """
     n = inp.n_slots
     if move_enabled is None:
         move_enabled = _move_enabled_default()
-    planner = _HeadroomPlanner(inp, move_enabled)
-    states = [JobState.new(j, n) for j in inp.jobs]
+    planner = _HeadroomPlanner(inp, move_enabled, gap)
+    states = [JobState.new(j, n, gap.hidden_run_min.get(j.id, 0)) for j in inp.jobs]
     demand = [g.pace_demand_mw for g in inp.slots]   # reason percentile only (Requirement 13.4)
     out_slots: list[SlotResult] = []
     decisions: list[Decision] = []
@@ -1554,10 +1633,11 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
         grid_kw = max(0.0, grid_kw)                                 # Requirement 10.15
         if planner.in_dr_hold():                                    # Requirements 11.15, 14.4
             assert inp.cap_kw is not None
-            if grid_kw > inp.cap_kw + _KW_TOL:
+            if grid_kw > inp.cap_kw + _KW_TOL and not gap.soft_dr:
                 raise AssertionError(f"{inp.name}: slot {s} grid draw {grid_kw} kW "
                                      f"above the DR cap {inp.cap_kw} kW")
-            grid_kw = min(grid_kw, inp.cap_kw)   # absorb float noise from load − (load − cap)
+            if grid_kw <= inp.cap_kw + _KW_TOL:
+                grid_kw = min(grid_kw, inp.cap_kw)   # absorb float noise from load − (load − cap)
         planner.P = max(planner.P, grid_kw)
         out_slots.append(SlotResult(
             t=slot.t,

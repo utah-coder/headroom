@@ -34,6 +34,32 @@ python -m analyst.local --model <model-id> --route <mantle|invoke>
 npm --prefix web run dev
 ```
 
+## Stress test
+
+The published scenarios give the planner actual carbon for its whole 24-hour look-ahead and every job's exact run time. The panel "How sturdy are the savings?" shows what happens without that foresight. It's precomputed by `sim/stress.py` and read from `web/public/scenarios/stress.json`.
+
+| Part | Real or assumed | Where |
+|---|---|---|
+| Carbon forecast and its errors | REAL data, using only hours already past | `sim/forecast.py` |
+| The utility's day-ahead demand forecast and its errors | REAL (EIA `DF`) | `sim/forecast.py` |
+| Jobs running long or short | ASSUMED: true run times centered 10% over the estimate | `STRESS_RUNTIME_*` in `sim/config.py` |
+| Battery failures and regions refusing jobs | ASSUMED: unannounced, 2 to 12 hours | `STRESS_OUTAGE_HOURS` in `sim/config.py` |
+| Replay of 57 back-to-back 48-hour windows, June to September | REAL grid, simulated jobs | `build_replay` in `sim/stress.py` |
+
+**How to read it:**
+- The spread across runs shows sensitivity to the assumptions above. It isn't the probability of any outcome.
+- A missed demand-response cut costs nothing on this bill, because the program's penalties aren't modeled. A battery that sits out the event can show a higher saving, so read savings beside the other columns.
+- Each replay window bills a full month's demand charge on its own 48-hour peak, so windows can be compared but shouldn't be added up.
+
+**Not tested yet:** surprise demand-response events, jobs arriving differently than expected, and inference load that differs from its profile.
+
+Rebuild it after any change to the engine, and commit the result (about 2 minutes on 8 cores). CI fails if the file is stale:
+
+```powershell
+python -m sim.stress
+python -m sim.stress --check
+```
+
 ## Real vs simulated
 
 | Input | Label | Source / notes |
