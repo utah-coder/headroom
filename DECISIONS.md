@@ -370,3 +370,32 @@ The entries below were seeded from the approved design before implementation sta
 - **Layout:** the panel sits between the chart row and the what-if panel, below the fold. At 1920x1080 with the guide hidden, chart bottom 860 px against the footer at 1,026 px, unchanged (Requirement 22.9). No horizontal page scroll at 375 px; the test table scrolls inside its own box.
 - **Tests:** pytest 776 (was 724), vitest 109 (was 98). `sim.stress --check` runs in CI.
 - **Affected component:** `sim/forecast.py` and `sim/stress.py` (new), `sim/scheduler.py` (`PlanningGap`, `JobState.hidden_min`, `_believe_carbon`), `sim/run_scenarios.py` (`scenario_inputs`), `sim/config.py`, `sim/tests/test_forecast_stress.py` (new), `web/public/scenarios/stress.json` (new), `web/src/stressTypes.ts`, `web/src/data/loadStress.ts`, `web/src/lib/stressView.ts`, `web/src/lib/stressView.test.ts` and `web/src/components/StressPanel.tsx` (new), `web/src/App.tsx`, `web/src/lib/colors.ts`, `web/src/lib/time.ts`, `.github/workflows/ci.yml`, `README.md`, `HANDOFF.md`.
+
+### 2026-11-14 10:40 MT: Operator briefing (owner request)
+
+- **Decision:**
+  1. **Step 6 of the owner's planning workflow:** Claude explains the plan and its stress test, and code supplies every figure and every piece of evidence. It reuses the analyst's backend, limits and figure verifier, at a new path, `POST /api/briefing`. CloudFront already sends `/api/*` to that Lambda, so no infrastructure changed.
+  2. **Live, on request, cached per scenario.** The briefing runs when someone presses the button, like the what-if, which the owner chose to present as real-time AI. Its inputs only change with a deploy, so a verified briefing is cached in the Lambda container and repeats skip the limits. A code-written fallback isn't cached, so a later request can still get the AI text. Writing it at build time was rejected: neither CI nor the build has Bedrock access.
+  3. **Code picks the evidence.** It offers up to six decisions and every stress test. The decisions are the three that saved the most route cost against running on the grid now, up to two the demand-response event forced (found by their reason text, because the contract carries no cause), and the largest move. The model may cite only those ids, through a JSON-schema enum that code checks again. Decision labels say "route cost", because the scheduler's prices include carbon and deadline risk, so they aren't bill dollars.
+  4. **Figures use the page's rounding.** Python rounds halves to even and `format.ts` rounds them up, so the first version showed the battery shortfall as 1,452 kW against 1,453 kW in the stress panel. The briefing now formats every figure the way the page does, and a test pins it.
+  5. **Every fact carries a meaning, and a test's figure must cite its test.** The first real drafts used correct figures for the wrong things. They read stress runs that cost more than baseline as jobs missing deadlines, called the forecast test "carbon forecasts worsen", and described events late in the window as "late event notification". Each fact now says what it measures, the random-time battery facts are named `risk.battery_random_*` after drafts kept confusing the two battery tests, and a point that quotes a test's figure must cite that test.
+  6. **Checks beyond the shared verifier, for the briefing only:** a headline of at most 25 words, three to five points, evidence on every point, no stress figure in the headline, and no count written as "one", "a single", "a few", "several" or "many" before a job, run, move, region, window, decision, deadline, hour or day. A draft wrote "moving one training run" for a plan with 5 moves, and the shared verifier allows "one" on purpose ("One reason…"), so it's unchanged and **the what-if analyst still has that gap.**
+  7. **Meanings and the prompt hold no digits or number words.** Drafts copied "out of 100" and "eight hours" from my own meanings and were rejected. A test now runs every meaning through the verifier.
+  8. **Up to three drafts,** not two as in the what-if, because a verified briefing is cached and this rarely runs.
+  9. **A "Figures in this briefing" table** lists every quoted figure with its meaning, because the checks can't catch a misreading.
+- **Measured on Haiku 4.5 through Bedrock InvokeModel** (14 real briefings, about 2,700 to 5,800 input and 400 to 1,000 output tokens each):
+  - **Before the fixes:** 8 of 10 fell back to the code-written briefing. The two that passed contained the misreadings in item 5.
+  - **Final version:** 4 of 4 passed, 5 of 6 drafts on the first try, in 6 to 9 s.
+  - **Misreadings that still pass, about one per briefing:**
+    - "5,730 kW peak reduction", where 5,730 kW is capacity freed in the grid's busiest hours.
+    - "A random battery failure … drives the plan cost below baseline in 11 of 100 runs", which uses the all-failures figure and inverts its direction.
+    - "0 of 100 stress runs showed no cost increase", a double negative that says the opposite.
+    - "missed cuts carry no billing penalty in this model", which is true of this bill but reads as a claim about penalties.
+  - The evidence buttons and the figures table are how a reader catches these. A stronger model may misread less; this account can't call one.
+- **Not verified:**
+  - Nothing has been deployed. The new path through CloudFront is the same behavior the what-if uses, but no briefing has gone through it.
+  - The bundle check now writes a briefing from the bundled `stress.json`, but it runs only on Linux and Python 3.12, so CI's next push is its first run.
+  - Browser checks used a stub that returned a real Haiku reply.
+- **Layout:** the panel sits between the chart row and the stress panel, below the fold, so the 1920x1080 fit is unchanged. No horizontal scroll at 375 px. A decision citation switches to Headroom, opens the decision and scrolls it into view.
+- **Tests:** pytest 826 (was 776), vitest 116 (was 109).
+- **Affected component:** `analyst/briefing.py` (new), `analyst/handler.py`, `analyst/local.py`, `sim/config.py`, `sim/tests/test_briefing.py` (new), `scripts/build_analyst.py`, `scripts/check_analyst_bundle.py`, `web/src/lib/briefingApi.ts` and `briefingApi.test.ts` (new), `web/src/components/BriefingPanel.tsx` (new), `web/src/components/DecisionLog.tsx`, `web/src/lib/whatifApi.ts`, `web/src/App.tsx`, `README.md`, `HANDOFF.md`.

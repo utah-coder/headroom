@@ -70,6 +70,10 @@ def main():
     shutil.copytree(os.path.join(ROOT, "analyst"), os.path.join(out, "analyst"), ignore=ignore)
     shutil.copytree(os.path.join(ROOT, "sim"), os.path.join(out, "sim"), ignore=ignore)
     shutil.copytree(os.path.join(ROOT, "data", "raw"), os.path.join(out, "data", "raw"))
+    # The briefing quotes the committed stress test, at the path sim/ expects.
+    os.makedirs(os.path.join(out, "web", "public", "scenarios"))
+    shutil.copy2(os.path.join(ROOT, "web", "public", "scenarios", "stress.json"),
+                 os.path.join(out, "web", "public", "scenarios", "stress.json"))
 
     size = size_mb(out)
     print("==> Bundle: {} ({:.0f} MB unzipped)".format(out, size))

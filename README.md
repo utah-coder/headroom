@@ -34,6 +34,20 @@ python -m analyst.local --model <model-id> --route <mantle|invoke>
 npm --prefix web run dev
 ```
 
+## Operator briefing
+
+"Write the briefing" asks Claude for a short read on the selected scenario's plan and its risks. It uses the analyst's backend (`POST /api/briefing`) and the same rule: the model never writes a figure.
+
+| Step | Done by | What happens |
+|---|---|---|
+| 1. Gather | Code (`analyst/briefing.py`) | Picks every fact the briefing may quote, from the engine and `stress.json`, each with what it measures. Picks the evidence too: the decisions that saved the most, any the demand-response event forced, the largest move, and the stress tests. |
+| 2. Write | Claude on Amazon Bedrock | Writes a headline and up to five points, quoting figures only as placeholders and citing evidence only by id. |
+| 3. Check | Code | Rejects a figure written directly, a count like "one move", an unknown fact or evidence id, a point with no evidence, and a test's figure in a point that doesn't cite that test. Up to three drafts, then a briefing written by code. |
+
+Each citation is a button: a decision opens in the decision log, and a test scrolls to the stress panel. A "Figures in this briefing" table lists every figure with what it measures. The checks cover figures, not meaning, and Haiku 4.5 still attaches a real figure to the wrong meaning in most briefings, so the table is there to check against.
+
+A verified briefing is cached per scenario for the life of the Lambda container. Its inputs only change with a deploy, so repeats cost nothing and don't count against the limits. A new one counts as one question.
+
 ## Stress test
 
 The published scenarios give the planner actual carbon for its whole 24-hour look-ahead and every job's exact run time. The panel "How sturdy are the savings?" shows what happens without that foresight. It's precomputed by `sim/stress.py` and read from `web/public/scenarios/stress.json`.

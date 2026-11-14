@@ -129,3 +129,10 @@ The demo is frozen. Make only fixes, documentation changes and redeploys; add no
 - **A commit that changes engine output must also rebuild the stress file:** run `python -m sim.stress` (about 2 minutes) and commit the result. CI's `python -m sim.stress --check` fails otherwise. pytest's own check covers only the single runs and two replay windows.
 - **`PlanningGap` must stay a no-op by default.** Published runs depend on it, and the committed scenario tests will fail if it isn't.
 - **Don't read the spread as a probability.** The run-time and outage sizes are assumptions, and the page says so.
+
+## Update, 2026-11-14: the operator briefing
+
+- **New:** `analyst/briefing.py`, `POST /api/briefing` on the analyst's Lambda, and the "Operator briefing" panel. See `DECISIONS.md`, 2026-11-14, and the README's "Operator briefing".
+- **Same rule as the what-if:** never add a figure to the prompt or loosen a check to make a draft pass. A meaning the model sees must hold no digits or number words; a test enforces it.
+- **The bundle now carries `web/public/scenarios/stress.json`,** because the briefing quotes it. A rebuilt stress file needs a redeploy to reach the briefing.
+- **The live plan is on a separate local branch, `live-plan`,** committed as it was found and not pushed. It touches some of the same files as this work (`App.tsx`, `DECISIONS.md`, `README.md`, `scripts/check_analyst_bundle.py`), so whichever merges second will need those resolved.

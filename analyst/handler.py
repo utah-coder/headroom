@@ -1,4 +1,4 @@
-"""Lambda entry point for ``POST /api/whatif``, behind CloudFront.
+"""Lambda entry point for ``POST /api/whatif`` and ``POST /api/briefing``, behind CloudFront.
 
 Never returns 403 or 404. The distribution rewrites those to ``index.html`` with
 status 200 for the single-page site, so they would reach the browser as HTML. The
@@ -15,8 +15,8 @@ import os
 import time
 from typing import Any
 
+from analyst import briefing, workflow
 from analyst import llm as llm_module
-from analyst import workflow
 from analyst.limits import Limits, visitor_id
 from analyst.llm import LlmError
 from sim import config, whatif
@@ -27,6 +27,8 @@ _DAILY = "The analyst has reached its daily limit. Everything else on this page 
 _VISITOR = "You've reached the hourly limit for questions. Try again later."
 
 _limits: Limits | None = None
+# Verified briefings by scenario. Their inputs are fixed per deploy, so a repeat costs nothing.
+_briefings: dict[str, dict[str, Any]] = {}
 
 
 def _reply(status: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -47,8 +49,8 @@ def _get_limits() -> Limits:
     return _limits
 
 
-def _parse(event: dict[str, Any]) -> tuple[str, str] | str:
-    """The question and scenario, or a message saying what's wrong."""
+def _body(event: dict[str, Any]) -> dict[str, Any] | str:
+    """The JSON body, or a message saying what's wrong."""
     raw = event.get("body") or ""
     if event.get("isBase64Encoded"):
         try:
@@ -61,6 +63,14 @@ def _parse(event: dict[str, Any]) -> tuple[str, str] | str:
         return "The request body isn't valid JSON."
     if not isinstance(body, dict):
         return "The request body must be a JSON object."
+    return body
+
+
+def _parse(event: dict[str, Any]) -> tuple[str, str] | str:
+    """The question and scenario, or a message saying what's wrong."""
+    body = _body(event)
+    if isinstance(body, str):
+        return body
     question = body.get("question")
     scenario = body.get("scenario")
     if not isinstance(question, str) or not question.strip():
@@ -76,17 +86,8 @@ def _log(**fields: Any) -> None:
     print(json.dumps({"event": "whatif", **fields}))
 
 
-def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
-    started = time.monotonic()
-    method = event.get("requestContext", {}).get("http", {}).get("method", "")
-    if method != "POST":
-        return _reply(405, {"status": "error", "message": "Use POST."})
-
-    parsed = _parse(event)
-    if isinstance(parsed, str):
-        return _reply(400, {"status": "error", "message": parsed})
-    question, scenario = parsed
-
+def _take_limit(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Count one model request. A reply means it was refused."""
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     visitor = visitor_id(headers.get("cloudfront-viewer-address", ""), os.environ.get("ANALYST_SALT", ""))
     try:
@@ -97,6 +98,49 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     if stopped_by is not None:
         _log(status="rate_limited", limit=stopped_by)
         return _reply(429, {"status": "rate_limited", "message": _DAILY if stopped_by == "daily" else _VISITOR})
+    return None
+
+
+def _briefing(event: dict[str, Any], started: float) -> dict[str, Any]:
+    """``POST /api/briefing``. A cached briefing skips the limits: it costs nothing."""
+    body = _body(event)
+    if isinstance(body, str):
+        return _reply(400, {"status": "error", "message": body})
+    scenario = body.get("scenario")
+    if scenario not in whatif.SCENARIOS:
+        return _reply(400, {"status": "error", "message": "Unknown scenario."})
+    if scenario in _briefings:
+        _log(kind="briefing", status="cached", seconds=round(time.monotonic() - started, 2))
+        return _reply(200, _briefings[scenario])
+    refused = _take_limit(event)
+    if refused is not None:
+        return refused
+    llm = llm_module.from_environment()
+    result = briefing.brief(scenario, llm)
+    if result["source"] == "model_verified":
+        _briefings[scenario] = result
+    _log(kind="briefing", status=result["status"], source=result["source"],
+         seconds=round(time.monotonic() - started, 2), model=llm.model,
+         input_tokens=llm.input_tokens, output_tokens=llm.output_tokens)
+    return _reply(200, result)
+
+
+def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
+    started = time.monotonic()
+    method = event.get("requestContext", {}).get("http", {}).get("method", "")
+    if method != "POST":
+        return _reply(405, {"status": "error", "message": "Use POST."})
+    if str(event.get("rawPath", "")).rstrip("/").endswith("/briefing"):
+        return _briefing(event, started)
+
+    parsed = _parse(event)
+    if isinstance(parsed, str):
+        return _reply(400, {"status": "error", "message": parsed})
+    question, scenario = parsed
+
+    refused = _take_limit(event)
+    if refused is not None:
+        return refused
 
     llm = llm_module.from_environment()
     try:

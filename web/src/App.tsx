@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useState, type ReactNode } from 'react';
+import { BriefingPanel } from './components/BriefingPanel';
 import { DecisionLog } from './components/DecisionLog';
 import { DrPanel } from './components/DrPanel';
 import ErrorBanner from './components/ErrorBanner';
@@ -58,6 +59,21 @@ export default function App() {
           : { scenario: state.scenario, key },
       ),
     [state.scenario],
+  );
+
+  // A briefing citation: show Headroom, open that decision, then bring its row into view.
+  // Options only render in Headroom mode, so a Baseline or Cheapest-hour view switches first.
+  const onOpenDecision = useCallback(
+    (key: string) => {
+      if (state.mode !== 'headroom') dispatch({ type: 'setMode', mode: 'headroom' });
+      setOpenDecision({ scenario: state.scenario, key });
+      window.setTimeout(() => {
+        const row = document.querySelector<HTMLElement>(`[data-decision-key="${CSS.escape(key)}"]`);
+        row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+      }, 50);
+    },
+    [state.mode, state.scenario],
   );
 
   // The Guide shows on first visit; hiding it is remembered in this browser
@@ -166,6 +182,9 @@ export default function App() {
           />
         </div>
         {/* Below the demo's fold on purpose, so the 1920x1080 fit above is unchanged. */}
+        <div data-area="briefing" className="min-w-0 xl:col-span-3">
+          <BriefingPanel scenario={state.scenario} onOpenDecision={onOpenDecision} />
+        </div>
         <div data-area="stress" className="min-w-0 xl:col-span-3">
           <StressPanel scenario={state.scenario} />
         </div>
