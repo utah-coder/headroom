@@ -171,6 +171,8 @@ cd ~/headroom && bash scripts/cloudshell-deploy.sh
 
 **What it does:** checks Node (installing Node 22 into `~/node` if needed), runs `scripts/bedrock-probe.sh` to find a Claude model the account can actually call, builds under `/tmp`, bootstraps CDK if needed, deploys, then runs a smoke test that includes one real question.
 
+**Pick the site's region.** The script deploys to the region CloudShell is open in, and CloudShell may open somewhere else. To set it, run `AWS_REGION=us-west-2 bash scripts/cloudshell-deploy.sh`. Before building anything, `scripts/region-guard.sh` stops the deploy if Headroom already runs in another region of the account, and names that region. A second copy couldn't work anyway: CloudFront names are global, so it fails on a name clash.
+
 **Why it probes:** model access varies by account, and a listed model can still answer "not available for this account". If no model answers, the script deploys the static site without the analyst.
 
 **Options:**

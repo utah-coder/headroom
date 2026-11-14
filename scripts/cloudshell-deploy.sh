@@ -39,6 +39,9 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 
 step "Target: account $ACCOUNT, region $REGION, commit $(git log -1 --format='%h %s')"
 
+# --- Is this the site's region? Before anything is built, installed or created.
+bash scripts/region-guard.sh "$REGION" || { echo "Stopped. Nothing was deployed." >&2; exit 1; }
+
 # --- Node: Vite 8 needs ^20.19 or >=22.12, and CloudShell's may be older.
 node_ok() {
   command -v node >/dev/null || return 1
