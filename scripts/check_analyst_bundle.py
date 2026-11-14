@@ -66,3 +66,19 @@ body = json.loads(reply["body"])
 if reply["statusCode"] != 200 or body.get("answer_source") != "model_verified":
     sys.exit("Unexpected reply: {}".format(reply["body"][:400]))
 print("Bundle OK: {}".format(body["answer"]))
+
+# --- The briefing, which also reads the bundled stress.json.
+Model.replies = [{
+    "headline": "The plan saves {{plan.usd_saved}}.",
+    "points": [{"text": "Jobs wait for cheaper hours.", "evidence": ["test:forecast"]}] * 3,
+}]
+reply = lambda_handler.handler({
+    "requestContext": {"http": {"method": "POST"}},
+    "rawPath": "/api/briefing",
+    "headers": {},
+    "body": json.dumps({"scenario": "sun"}),
+}, None)
+body = json.loads(reply["body"])
+if reply["statusCode"] != 200 or body.get("source") != "model_verified":
+    sys.exit("Unexpected briefing: {}".format(reply["body"][:400]))
+print("Briefing OK: {}".format(body["headline"]))

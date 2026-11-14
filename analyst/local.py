@@ -39,6 +39,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", 0))
         event = {
             "requestContext": {"http": {"method": method}},
+            "rawPath": self.path,
             "headers": dict(self.headers.items()),
             "body": self.rfile.read(length).decode("utf-8") if length else "",
         }
@@ -68,7 +69,7 @@ def main() -> None:
     os.environ.update(ANALYST_MODEL=args.model, ANALYST_ROUTE=args.route, ANALYST_REGION=args.region,
                       ANALYST_EFFORT=args.effort)
     lambda_handler._limits = Limits(client=_MemoryCounters(), table="local", daily_cap=500, hourly_per_visitor=500)
-    print(f"What-if analyst on http://127.0.0.1:{_PORT}/api/whatif")
+    print(f"What-if analyst on http://127.0.0.1:{_PORT}/api/whatif, briefing on /api/briefing")
     # Threaded: an idle browser connection would otherwise block every other request.
     ThreadingHTTPServer(("127.0.0.1", _PORT), _Handler).serve_forever()
 

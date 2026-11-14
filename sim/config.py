@@ -150,6 +150,7 @@ ANALYST_QUESTION_MAX_CHARS = 400           # ILLUSTRATIVE
 ANALYST_DAILY_QUESTION_CAP = 100           # ILLUSTRATIVE: hard stop on model spend, whole site, per UTC day
 ANALYST_HOURLY_PER_VISITOR = 10            # ILLUSTRATIVE
 ANALYST_ANSWER_MAX_CHARS = 1200            # ILLUSTRATIVE
+ANALYST_BRIEFING_MAX_CHARS = 1800          # ILLUSTRATIVE: headline and every point together
 ANALYST_MAX_TOKENS = 4000                  # ILLUSTRATIVE: per model call, includes any thinking
 ANALYST_CALL_TIMEOUT_S = 25                # ILLUSTRATIVE: one model call
 ANALYST_TIME_BUDGET_S = 50                 # ILLUSTRATIVE: whole question; CloudFront gives up at 60 s

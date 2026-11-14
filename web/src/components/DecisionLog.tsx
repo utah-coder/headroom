@@ -47,7 +47,7 @@ function DecisionRow({ d, open, onToggle }: { d: Decision; open: boolean; onTogg
   const panelId = `${useId()}-options`;
   // A button may hold only phrasing content, so the rows are spans.
   return (
-    <li className="border-b border-slate-800 py-1 last:border-b-0">
+    <li className="border-b border-slate-800 py-1 last:border-b-0" data-decision-key={decisionKey(d)}>
       <button
         type="button"
         aria-expanded={open}
