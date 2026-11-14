@@ -174,6 +174,8 @@ cd ~/headroom && bash scripts/cloudshell-deploy.sh
 
 **What it does:** checks Node (installing Node 22 into `~/node` if needed), checks for the Gemini API key, runs `scripts/gemini-probe.sh` to find a Gemini model the key can actually call, builds under `/tmp`, bootstraps CDK if needed, deploys, then runs a smoke test that includes one real question.
 
+**Pick the site's region.** The script deploys to the region CloudShell is open in, and CloudShell may open somewhere else. To set it, run `AWS_REGION=us-west-2 bash scripts/cloudshell-deploy.sh`. Before building anything, `scripts/region-guard.sh` stops the deploy if Headroom already runs in another region of the account, and names that region. A second copy couldn't work anyway: CloudFront names are global, so it fails on a name clash.
+
 **The Gemini API key:** the analyst and the briefing call Google's Gemini API, so they need a key from https://aistudio.google.com/apikey. It lives in the SSM SecureString parameter `/headroom/gemini-api-key`, in the region you deploy to. The first time, the script asks for the key and stores it there, encrypted. The Lambda reads it at run time, so the key is never in the template or the function's configuration. To store or replace it yourself, run this and paste the key when asked:
 
 ```bash
