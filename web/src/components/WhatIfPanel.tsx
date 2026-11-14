@@ -7,7 +7,7 @@ import { hhmmDenver } from '../lib/time';
 import { askWhatIf, changeText, visibleFigures, type WhatIfReply, type WhatIfRow, type WhatIfSeries } from '../lib/whatifApi';
 import type { ScenarioName } from '../types';
 
-// What-if analyst panel. Claude turns a question into inputs, the real engine
+// What-if analyst panel. Gemini turns a question into inputs, the real engine
 // reruns, and code checks that every figure came from the engine. Sending a
 // question is the only network use after page load, and the rest of the page
 // doesn't depend on it.
@@ -153,7 +153,7 @@ export function WhatIfPanel({ scenario }: { scenario: ScenarioName }) {
         <p className="text-base text-slate-100">Fine-tune Headroom to your own assumptions, live.</p>
         <p className="text-sm text-slate-300">
           The panels above replay precomputed results. This one runs when you ask: change the tariff, carbon price,
-          storage, demand-response cut or region moves in plain English. Claude turns your question into inputs and the
+          storage, demand-response cut or region moves in plain English. Gemini turns your question into inputs and the
           real engine reruns on them, so you see the effect in seconds.
         </p>
       </div>

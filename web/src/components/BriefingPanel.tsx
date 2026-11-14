@@ -3,7 +3,7 @@ import { askBriefing, pointEvidence, type BriefingEvidence, type BriefingReply }
 import { ROUTE_COLORS } from '../lib/colors';
 import type { ScenarioName } from '../types';
 
-// The operator briefing. Claude summarizes the plan and its risks from facts code chose,
+// The operator briefing. Gemini summarizes the plan and its risks from facts code chose,
 // and every point cites evidence code chose. Each citation opens that decision in the log
 // or scrolls to the stress test, so a reader can check the claim. Nothing is fetched until
 // someone asks, and the rest of the page doesn't depend on it.
@@ -106,7 +106,7 @@ export function BriefingPanel({ scenario, onOpenDecision }: { scenario: Scenario
           <span className="rounded-full bg-sky-300 px-2 py-0.5 text-xs font-semibold text-slate-950">Real-time AI</span>
         </div>
         <p className="text-sm text-slate-300">
-          A short read on this plan and its risks, for whoever runs the site. Claude writes it from the engine's results and the
+          A short read on this plan and its risks, for whoever runs the site. Gemini writes it from the engine's results and the
           stress test, and every point links to the decision or test behind it.
         </p>
       </div>

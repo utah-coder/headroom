@@ -73,7 +73,7 @@ const WHY_IT_MATTERS =
 
 const REAL_TIME_AI =
   'The charts replay precomputed results, but the Ask what if panel at the bottom of this page runs live. Ask a ' +
-  'question in plain English, and Claude sets up the change and the engine reruns on it, so you can fine-tune ' +
+  'question in plain English, and Gemini sets up the change and the engine reruns on it, so you can fine-tune ' +
   'the assumptions to your own site in seconds.';
 
 const SCENARIO_TEXT: Record<ScenarioName, string> = {

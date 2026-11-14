@@ -1,4 +1,4 @@
-"""The operator briefing: Claude summarizes the plan and its risks, and code checks it.
+"""The operator briefing: Gemini summarizes the plan and its risks, and code checks it.
 
 Same rule as the what-if analyst: the model never writes a figure. Code picks every
 fact and every piece of evidence first:

@@ -1,6 +1,6 @@
 """The operator briefing: facts and evidence from code, a checked draft, and its endpoint.
 
-No test calls Bedrock. ``ScriptedLlm`` (from the analyst tests) plays back what a model
+No test calls Gemini. ``ScriptedLlm`` (from the analyst tests) plays back what a model
 might write, including drafts the checks must stop.
 """
 

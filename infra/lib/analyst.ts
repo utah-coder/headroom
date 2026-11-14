@@ -7,12 +7,18 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
-/** Deploy settings, from `-c headroom:analyst*` context. Which model an account can call varies. */
+/** Deploy settings, from `-c headroom:analyst*` context. */
 export interface AnalystProps {
+  /** A Gemini model id, such as `gemini-4-hydrogen`. */
   readonly model: string;
-  readonly route: string;
-  readonly region: string;
+  /** The model's thinking level; empty for the model's default. */
   readonly effort: string;
+  /**
+   * Name of the SSM SecureString parameter that holds the Gemini API key. The owner
+   * creates it; the stack only grants the function read access, so the key never
+   * appears in the template or in the function's configuration.
+   */
+  readonly keyParameter: string;
   readonly dailyCap: string;
   readonly hourlyPerVisitor: string;
   /** Optional cap on simultaneous runs. New accounts may have too little concurrency to reserve any. */
@@ -62,9 +68,8 @@ export class Analyst extends Construct {
       environment: {
         ANALYST_TABLE: counters.tableName,
         ANALYST_MODEL: props.model,
-        ANALYST_ROUTE: props.route,
-        ANALYST_REGION: props.region,
         ANALYST_EFFORT: props.effort,
+        ANALYST_KEY_PARAMETER: props.keyParameter,
         ANALYST_DAILY_CAP: props.dailyCap,
         ANALYST_HOURLY_PER_VISITOR: props.hourlyPerVisitor,
         ANALYST_SALT: cdk.Aws.STACK_ID,
@@ -73,22 +78,19 @@ export class Analyst extends Construct {
 
     counters.grant(fn, 'dynamodb:UpdateItem');
 
-    // Both Bedrock routes: which one works depends on the account and model.
+    // The model is Gemini, called over the public internet with an API key. The only
+    // AWS permission that needs is reading the key. The parameter must be encrypted
+    // with the account's default SSM key (alias/aws/ssm), which needs no KMS grant.
+    if (!props.keyParameter.startsWith('/')) {
+      throw new Error(`headroom:analystKeyParameter must start with "/": ${props.keyParameter}`);
+    }
     fn.addToRolePolicy(
       new iam.PolicyStatement({
-        sid: 'InvokeAnthropicModels',
-        actions: ['bedrock:InvokeModel'],
+        sid: 'ReadGeminiApiKey',
+        actions: ['ssm:GetParameter'],
         resources: [
-          `arn:${cdk.Aws.PARTITION}:bedrock:*::foundation-model/anthropic.*`,
-          `arn:${cdk.Aws.PARTITION}:bedrock:*:${cdk.Aws.ACCOUNT_ID}:inference-profile/*anthropic.*`,
+          `arn:${cdk.Aws.PARTITION}:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter${props.keyParameter}`,
         ],
-      }),
-    );
-    fn.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'CallMessagesEndpoint',
-        actions: ['bedrock-mantle:CreateInference'],
-        resources: ['*'], // The endpoint's docs give no resource ARN format to narrow this to.
       }),
     );
 

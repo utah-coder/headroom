@@ -20,21 +20,21 @@ if platform.system() != "Linux" or sys.version_info[:2] != (3, 12):
 sys.path.insert(0, BUNDLE)
 os.chdir(BUNDLE)
 
-import anthropic  # noqa: E402
 import boto3  # noqa: E402
 import numpy  # noqa: E402
+from google import genai  # noqa: E402
 
 from analyst import handler as lambda_handler  # noqa: E402
 from analyst.limits import Limits  # noqa: E402
 from sim import whatif  # noqa: E402
 
-for module in (anthropic, boto3, numpy, whatif):
+for module in (genai, boto3, numpy, whatif):
     if not os.path.abspath(module.__file__).startswith(os.path.abspath(BUNDLE)):
         sys.exit("{} loaded from outside the bundle: {}".format(module.__name__, module.__file__))
 
-# Both Bedrock clients must construct from the bundle (no network until first use).
-anthropic.AnthropicBedrock(aws_region="us-west-2", aws_access_key="x", aws_secret_key="x")
-anthropic.AnthropicBedrockMantle(aws_region="us-west-2", aws_access_key="x", aws_secret_key="x")
+# The Gemini client must construct from the bundle (no network until first use).
+if not hasattr(genai.Client(api_key="x").interactions, "create"):
+    sys.exit("The bundled google-genai has no interactions.create.")
 
 
 class Model:

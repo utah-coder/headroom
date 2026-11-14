@@ -34,7 +34,7 @@ export type BriefingReply =
       points: BriefingPoint[];
       evidence: BriefingEvidence[];
       figures: BriefingFigure[];
-      /** model_verified: Claude's text passed the checks. engine_only: code wrote it. */
+      /** model_verified: Gemini's text passed the checks. engine_only: code wrote it. */
       source: 'model_verified' | 'engine_only';
       note: string;
     }

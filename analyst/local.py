@@ -1,9 +1,8 @@
 """Run the analyst on your machine, for development: ``python -m analyst.local``.
 
 Serves the same handler on http://127.0.0.1:8787 with an in-memory stand-in for
-DynamoDB. ``npm run dev`` proxies ``/api`` here. It calls real Bedrock with your
-local AWS credentials, so each question costs a little. ``scripts/bedrock-probe.sh``
-finds a model and route your account can call.
+DynamoDB. ``npm run dev`` proxies ``/api`` here. It calls the real Gemini API with
+the key in ``GEMINI_API_KEY``, so each question costs a little.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from typing import Any
 
 from analyst import handler as lambda_handler
 from analyst.limits import Limits
+from analyst.llm import DEFAULT_MODEL
 
 _PORT = 8787
 
@@ -61,13 +61,13 @@ class _Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=os.environ.get("ANALYST_MODEL", "anthropic.claude-opus-5-5"))
-    parser.add_argument("--route", default=os.environ.get("ANALYST_ROUTE", "mantle"), choices=("mantle", "invoke"))
-    parser.add_argument("--region", default=os.environ.get("ANALYST_REGION", "us-west-2"))
-    parser.add_argument("--effort", default=os.environ.get("ANALYST_EFFORT", ""))
+    parser.add_argument("--model", default=os.environ.get("ANALYST_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--effort", default=os.environ.get("ANALYST_EFFORT", "low"),
+                        help="the model's thinking level; empty for the model's default")
     args = parser.parse_args()
-    os.environ.update(ANALYST_MODEL=args.model, ANALYST_ROUTE=args.route, ANALYST_REGION=args.region,
-                      ANALYST_EFFORT=args.effort)
+    if not os.environ.get("GEMINI_API_KEY"):
+        parser.error("Set GEMINI_API_KEY to a Gemini API key first.")
+    os.environ.update(ANALYST_MODEL=args.model, ANALYST_EFFORT=args.effort)
     lambda_handler._limits = Limits(client=_MemoryCounters(), table="local", daily_cap=500, hourly_per_visitor=500)
     print(f"What-if analyst on http://127.0.0.1:{_PORT}/api/whatif, briefing on /api/briefing")
     # Threaded: an idle browser connection would otherwise block every other request.

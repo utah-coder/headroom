@@ -14,10 +14,10 @@ Ask "what if the demand charge doubled?" and the real scheduler reruns on the ch
 
 | Step | Done by | What happens |
 |---|---|---|
-| 1. Understand | Claude on Amazon Bedrock | Turns the question into inputs, constrained by a JSON schema. |
+| 1. Understand | Gemini, through Google's Gemini API | Turns the question into inputs, constrained by a JSON schema. |
 | 2. Validate | Code (`sim/whatif.py`) | Rejects anything unknown or out of range before the engine runs. |
 | 3. Compute | Code (the same engine) | Builds the scenario with and without the change. With no change, the result equals the committed scenario files. |
-| 4. Explain | Claude on Amazon Bedrock | Describes the result, quoting figures only by id, such as `{{whatif.usd_saved}}`. |
+| 4. Explain | Gemini, through Google's Gemini API | Describes the result, quoting figures only by id, such as `{{whatif.usd_saved}}`. |
 | 5. Verify | Code (`analyst/verify.py`) | Rejects a draft containing any figure of its own, whether digits or words like "twice". It allows one rewrite, then falls back to an answer written by code. |
 
 So every number a reader sees comes from the engine. The check covers figures, not interpretation: a draft can still describe correct figures poorly, so the panel always shows the engine's table beside the prose.
@@ -26,22 +26,25 @@ So every number a reader sees comes from the engine. The check covers figures, n
 
 **Adjustable inputs:** demand charge, on-peak and off-peak prices, carbon price, battery and flywheel power and capacity, demand-response cut, the region-move fee and price, and whether jobs may move at all. Ranges are in `WHATIF_BOUNDS` in `sim/config.py`.
 
-Run it locally against real Bedrock (each question costs a little):
+Run it locally against the real Gemini API (each question costs a little). Create a key at https://aistudio.google.com/apikey first:
 
 ```powershell
 pip install -r analyst\requirements.txt
-python -m analyst.local --model <model-id> --route <mantle|invoke>
+$env:GEMINI_API_KEY = "<your key>"
+python -m analyst.local
 npm --prefix web run dev
 ```
 
+`--model <model-id>` picks another Gemini model. The default is `gemini-4-hydrogen`.
+
 ## Operator briefing
 
-"Write the briefing" asks Claude for a short read on the selected scenario's plan and its risks. It uses the analyst's backend (`POST /api/briefing`) and the same rule: the model never writes a figure.
+"Write the briefing" asks Gemini for a short read on the selected scenario's plan and its risks. It uses the analyst's backend (`POST /api/briefing`) and the same rule: the model never writes a figure.
 
 | Step | Done by | What happens |
 |---|---|---|
 | 1. Gather | Code (`analyst/briefing.py`) | Picks every fact the briefing may quote, from the engine and `stress.json`, each with what it measures. Picks the evidence too: the decisions that saved the most, any the demand-response event forced, the largest move, and the stress tests. |
-| 2. Write | Claude on Amazon Bedrock | Writes a headline and up to five points, quoting figures only as placeholders and citing evidence only by id. |
+| 2. Write | Gemini, through Google's Gemini API | Writes a headline and up to five points, quoting figures only as placeholders and citing evidence only by id. |
 | 3. Check | Code | Rejects a figure written directly, a count like "one move", an unknown fact or evidence id, a point with no evidence, and a test's figure in a point that doesn't cite that test. Up to three drafts, then a briefing written by code. |
 
 Each citation is a button: a decision opens in the decision log, and a test scrolls to the stress panel. A "Figures in this briefing" table lists every figure with what it measures. The checks cover figures, not meaning, and Haiku 4.5 still attaches a real figure to the wrong meaning in most briefings, so the table is there to check against.
@@ -169,22 +172,36 @@ git clone -b <branch> https://github.com/utah-coder/headroom.git ~/headroom
 cd ~/headroom && bash scripts/cloudshell-deploy.sh
 ```
 
-**What it does:** checks Node (installing Node 22 into `~/node` if needed), runs `scripts/bedrock-probe.sh` to find a Claude model the account can actually call, builds under `/tmp`, bootstraps CDK if needed, deploys, then runs a smoke test that includes one real question.
+**What it does:** checks Node (installing Node 22 into `~/node` if needed), checks for the Gemini API key, runs `scripts/gemini-probe.sh` to find a Gemini model the key can actually call, builds under `/tmp`, bootstraps CDK if needed, deploys, then runs a smoke test that includes one real question.
 
 **Pick the site's region.** The script deploys to the region CloudShell is open in, and CloudShell may open somewhere else. To set it, run `AWS_REGION=us-west-2 bash scripts/cloudshell-deploy.sh`. Before building anything, `scripts/region-guard.sh` stops the deploy if Headroom already runs in another region of the account, and names that region. A second copy couldn't work anyway: CloudFront names are global, so it fails on a name clash.
 
-**Why it probes:** model access varies by account, and a listed model can still answer "not available for this account". If no model answers, the script deploys the static site without the analyst.
+**The Gemini API key:** the analyst and the briefing call Google's Gemini API, so they need a key from https://aistudio.google.com/apikey. It lives in the SSM SecureString parameter `/headroom/gemini-api-key`, in the region you deploy to. The first time, the script asks for the key and stores it there, encrypted. The Lambda reads it at run time, so the key is never in the template or the function's configuration. To store or replace it yourself, run this and paste the key when asked:
+
+```bash
+read -rs KEY && aws ssm put-parameter --name /headroom/gemini-api-key --type SecureString --overwrite --value "$KEY"; unset KEY
+```
+
+Questions typed into the what-if panel are sent to Google, with storage turned off on each request. Usage is billed to the key's Google project, not to AWS.
+
+**Why it probes:** a key can be valid and still not reach a given model. The probe makes small real calls, best model first. If there is no key, or no model answers, the script deploys the static site without the analyst.
 
 **Options:**
-- `--no-analyst` deploys only the static site, with no Lambda, DynamoDB or Bedrock.
+- `--no-analyst` deploys only the static site, with no Lambda, DynamoDB or Gemini.
 - `--yes` skips the confirmation.
 
 **Time:** allow up to 30 minutes. CloudShell can time out when idle, so press a key now and then. If it disconnects, CloudFormation keeps going: reconnect and rerun the script.
 
-**To change limits or the model,** pass context to `cdk deploy`: `headroom:analystDailyCap`, `headroom:analystHourlyPerVisitor`, `headroom:analystModel`, `headroom:analystRoute`, `headroom:analystRegion`, `headroom:analystEffort`, `headroom:analystConcurrency`.
+**To change limits or the model,** pass context to `cdk deploy`: `headroom:analystDailyCap`, `headroom:analystHourlyPerVisitor`, `headroom:analystModel`, `headroom:analystEffort` (the model's thinking level), `headroom:analystKeyParameter`, `headroom:analystConcurrency`.
 
 **To remove it:**
 
 ```bash
 cd ~/headroom/infra && npx cdk destroy --force -c headroom:region=$AWS_REGION -c headroom:analyst=false
+```
+
+The stack doesn't own the Gemini API key, so delete it separately:
+
+```bash
+aws ssm delete-parameter --name /headroom/gemini-api-key
 ```
