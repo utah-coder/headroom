@@ -1,6 +1,6 @@
 """The analyst workflow, verifier, limits and handler, with a scripted model.
 
-No test calls Bedrock. ``ScriptedLlm`` returns what a model might, including the
+No test calls Gemini. ``ScriptedLlm`` returns what a model might, including the
 replies a real model must not get past the verifier.
 """
 
@@ -10,7 +10,8 @@ import pytest
 
 from analyst import handler as lambda_handler
 from analyst.limits import Limits, visitor_id
-from analyst.llm import BedrockLlm, LlmError, LlmRefused
+from analyst import llm as llm_module
+from analyst.llm import GeminiLlm, LlmError, LlmRefused
 from analyst.verify import problems, render
 from analyst.workflow import CAVEAT, OUT_OF_SCOPE, answer, understand_schema
 from sim import whatif
@@ -210,7 +211,7 @@ class TestWorkflow:
         assert set(changes["required"]) == {k.key for k in whatif.KNOBS} | {whatif.MOVE_SWITCH}
 
     def test_understand_schema_has_no_null_enum(self):
-        # Bedrock rejects an enum that doesn't match its declared type, seen live:
+        # An enum must match its declared type. Bedrock rejected a nullable one, seen live:
         # "Enum value 'peak' does not match declared type '['string', 'null']'".
         scenario = understand_schema()["properties"]["scenario"]
         assert scenario["type"] == "string"
@@ -352,7 +353,7 @@ class TestHandler:
         assert self.llm.calls == []
 
     def test_a_blocked_model_is_503_with_no_details(self):
-        self.llm.replies = [LlmError("Bedrock HTTP 403: PermissionDeniedError secret-detail")]
+        self.llm.replies = [LlmError("Gemini HTTP 403: ClientError secret-detail")]
         status, body, _ = self.send(post({"question": "q", "scenario": "peak"}))
         assert status == 503
         assert "secret-detail" not in json.dumps(body)
@@ -372,17 +373,14 @@ class TestHandler:
         assert "my private question" not in capsys.readouterr().out
 
 
-class TestBedrockLlm:
+class TestGeminiLlm:
     class FakeClient:
         def __init__(self, response):
             self.response = response
             self.kwargs = None
 
-        def with_options(self, **_):
-            return self
-
         @property
-        def messages(self):
+        def interactions(self):
             return self
 
         def create(self, **kwargs):
@@ -390,60 +388,137 @@ class TestBedrockLlm:
             return self.response
 
     @staticmethod
-    def response(text='{"a": 1}', stop="end_turn"):
-        block = type("B", (), {"type": "text", "text": text})()
-        usage = type("U", (), {"input_tokens": 10, "output_tokens": 5})()
-        return type("R", (), {"content": [block], "stop_reason": stop, "usage": usage})()
+    def response(text='{"a": 1}', status="completed"):
+        usage = type("U", (), {"total_input_tokens": 10, "total_output_tokens": 5, "total_thought_tokens": 2})()
+        return type("R", (), {"output_text": text, "status": status, "usage": usage})()
 
     def llm(self, response, effort=None):
-        return BedrockLlm(model="m", route="invoke", region="us-west-2", effort=effort,
-                          _client=self.FakeClient(response))
+        return GeminiLlm(model="m", api_key="k", effort=effort, _client=self.FakeClient(response))
 
-    def test_rejects_an_unknown_route(self):
+    def test_rejects_an_unknown_thinking_level(self):
         with pytest.raises(ValueError):
-            BedrockLlm(model="m", route="carrier-pigeon", region="r")
+            GeminiLlm(model="m", api_key="k", effort="heroic")
 
     def test_returns_parsed_json_and_counts_tokens(self):
         llm = self.llm(self.response())
         assert llm.structured("s", "u", {"type": "object"}, 100) == {"a": 1}
-        assert (llm.input_tokens, llm.output_tokens) == (10, 5)
+        assert (llm.input_tokens, llm.output_tokens) == (10, 7)  # Thinking is billed as output.
         sent = llm._client.kwargs
-        assert sent["output_config"]["format"]["type"] == "json_schema"
-        assert sent["system"] == "s" and sent["max_tokens"] == 100
+        assert sent["response_format"] == {"type": "text", "mime_type": "application/json",
+                                           "schema": {"type": "object"}}
+        assert sent["system_instruction"] == "s" and sent["input"] == "u"
+        assert sent["generation_config"]["max_output_tokens"] == 100
 
-    def test_effort_is_sent_only_when_set(self):
-        # Haiku 4.5 rejects effort, so an unset value must not reach the API.
+    def test_the_question_is_not_stored_by_google(self):
+        llm = self.llm(self.response())
+        llm.structured("s", "u", {}, 100)
+        assert llm._client.kwargs["store"] is False
+
+    def test_the_call_is_bounded_by_the_time_left(self):
+        from sim import config
+
+        llm = self.llm(self.response())
+        llm.structured("s", "u", {}, 100, timeout_s=7)
+        assert llm._client.kwargs["timeout"] == 7
+        llm.structured("s", "u", {}, 100)
+        assert llm._client.kwargs["timeout"] == config.ANALYST_CALL_TIMEOUT_S
+
+    def test_thinking_level_is_sent_only_when_set(self):
         unset = self.llm(self.response())
         unset.structured("s", "u", {}, 100)
-        assert "effort" not in unset._client.kwargs["output_config"]
+        assert "thinking_level" not in unset._client.kwargs["generation_config"]
         high = self.llm(self.response(), effort="high")
         high.structured("s", "u", {}, 100)
-        assert high._client.kwargs["output_config"]["effort"] == "high"
-
-    def test_a_refusal_is_not_read_as_an_answer(self):
-        with pytest.raises(LlmRefused):
-            self.llm(self.response(stop="refusal")).structured("s", "u", {}, 100)
+        assert high._client.kwargs["generation_config"]["thinking_level"] == "high"
 
     def test_a_cut_off_reply_is_an_error(self):
         with pytest.raises(LlmError, match="tokens"):
-            self.llm(self.response(stop="max_tokens")).structured("s", "u", {}, 100)
+            self.llm(self.response(status="incomplete")).structured("s", "u", {}, 100)
 
-    @pytest.mark.parametrize("text", ["not json", "[1, 2]"])
+    def test_a_failed_call_is_not_read_as_an_answer(self):
+        with pytest.raises(LlmError, match="failed"):
+            self.llm(self.response(status="failed")).structured("s", "u", {}, 100)
+
+    @pytest.mark.parametrize("text", ["not json", "[1, 2]", "", None])
     def test_unusable_text_is_an_error(self, text):
         with pytest.raises(LlmError):
             self.llm(self.response(text=text)).structured("s", "u", {}, 100)
 
     def test_api_failures_become_llm_errors_without_details(self):
-        import anthropic
-        import httpx2
+        from google.genai import errors
 
         class Failing(self.FakeClient):
             def create(self, **kwargs):
-                request = httpx2.Request("POST", "https://example.test")
-                raise anthropic.PermissionDeniedError(
-                    "not available", response=httpx2.Response(403, request=request), body=None)
+                raise errors.ClientError(403, {"error": {"message": "not available", "status": "PERMISSION_DENIED"}})
 
-        llm = BedrockLlm(model="m", route="invoke", region="r", _client=Failing(None))
+        llm = GeminiLlm(model="m", api_key="k", _client=Failing(None))
         with pytest.raises(LlmError, match="HTTP 403") as caught:
             llm.structured("s", "u", {}, 100)
         assert "not available" not in str(caught.value)
+
+    def test_the_interactions_error_family_is_read_by_its_status(self):
+        # Seen live: a rejected key raises an error with status_code, outside google.genai.errors.
+        class BadRequestError(Exception):
+            status_code = 400
+
+        class Failing(self.FakeClient):
+            def create(self, **kwargs):
+                raise BadRequestError("API key not valid")
+
+        with pytest.raises(LlmError, match="HTTP 400: BadRequestError") as caught:
+            GeminiLlm(model="m", api_key="k", _client=Failing(None)).structured("s", "u", {}, 100)
+        assert "not valid" not in str(caught.value)
+
+    def test_a_timeout_becomes_an_llm_error(self):
+        class Slow(self.FakeClient):
+            def create(self, **kwargs):
+                raise TimeoutError("secret-detail")
+
+        with pytest.raises(LlmError, match="TimeoutError") as caught:
+            GeminiLlm(model="m", api_key="k", _client=Slow(None)).structured("s", "u", {}, 100)
+        assert "secret-detail" not in str(caught.value)
+
+
+class TestGeminiKey:
+    @pytest.fixture(autouse=True)
+    def no_cached_key(self, monkeypatch):
+        monkeypatch.setattr(llm_module, "_api_key", None)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    def test_building_the_client_reads_no_key(self, monkeypatch):
+        # The handler builds it before the model is needed; a missing key must not crash there.
+        monkeypatch.setenv("ANALYST_MODEL", "gemini-test")
+        monkeypatch.setenv("ANALYST_EFFORT", "")
+        llm = llm_module.from_environment()
+        assert (llm.model, llm.effort, llm.api_key) == ("gemini-test", None, None)
+
+    def test_the_environment_key_wins(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", " local-key ")
+        assert llm_module._key() == "local-key"
+
+    def test_the_key_comes_from_the_ssm_parameter(self, monkeypatch):
+        import boto3
+
+        asked = []
+
+        class Ssm:
+            def get_parameter(self, **kw):
+                asked.append(kw)
+                return {"Parameter": {"Value": "stored-key\n"}}
+
+        monkeypatch.setattr(boto3, "client", lambda name: Ssm())
+        monkeypatch.setenv("ANALYST_KEY_PARAMETER", "/x/key")
+        assert llm_module._key() == "stored-key"
+        assert llm_module._key() == "stored-key"
+        assert asked == [{"Name": "/x/key", "WithDecryption": True}]  # Read once per container.
+
+    def test_a_missing_key_is_an_llm_error_without_details(self, monkeypatch):
+        import boto3
+
+        def broken(name):
+            raise RuntimeError("secret-detail")
+
+        monkeypatch.setattr(boto3, "client", broken)
+        with pytest.raises(LlmError, match="API key") as caught:
+            GeminiLlm(model="m").structured("s", "u", {}, 100)
+        assert "secret-detail" not in str(caught.value)

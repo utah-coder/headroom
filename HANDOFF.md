@@ -118,7 +118,8 @@ The demo is frozen. Make only fixes, documentation changes and redeploys; add no
 
 - **The owner deploys, by hand, from AWS CloudShell** (`scripts/cloudshell-deploy.sh`), into a separate temporary account. Agents push code to GitHub and don't deploy. This replaces the "To deploy" commands above for agents.
 - **The zero-network rule now has one exception:** a question sent to the what-if analyst. See `DECISIONS.md`, 2026-11-04.
-- **New:** `analyst/` (workflow, figure verifier, limits, Lambda handler), `sim/whatif.py`, `infra/lib/analyst.ts`, and `scripts/{build_analyst.py,check_analyst_bundle.py,bedrock-probe.sh,cloudshell-deploy.sh}`.
+- **New:** `analyst/` (workflow, figure verifier, limits, Lambda handler), `sim/whatif.py`, `infra/lib/analyst.ts`, and `scripts/{build_analyst.py,check_analyst_bundle.py,gemini-probe.sh,cloudshell-deploy.sh}`.
+- **2026-11-14: the model is Gemini, not Claude on Bedrock** (owner request). `analyst/llm.py` calls Google's Gemini API with a key held in the SSM SecureString parameter `/headroom/gemini-api-key`. See `DECISIONS.md`, 2026-11-14.
 - **Never add a figure to model text by hand or relax `analyst/verify.py` to make a draft pass.** Fix the prompt instead.
 - **Keep constants out of function defaults.** `sim/whatif.py` overlays values on module globals, and a default argument binds at import, so it silently ignores the overlay (`grid_import_cap_kw` did this).
 - **The handler must never return 403 or 404:** CloudFront rewrites both to `index.html` with status 200.

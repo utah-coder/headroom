@@ -399,3 +399,21 @@ The entries below were seeded from the approved design before implementation sta
 - **Layout:** the panel sits between the chart row and the stress panel, below the fold, so the 1920x1080 fit is unchanged. No horizontal scroll at 375 px. A decision citation switches to Headroom, opens the decision and scrolls it into view.
 - **Tests:** pytest 826 (was 776), vitest 116 (was 109).
 - **Affected component:** `analyst/briefing.py` (new), `analyst/handler.py`, `analyst/local.py`, `sim/config.py`, `sim/tests/test_briefing.py` (new), `scripts/build_analyst.py`, `scripts/check_analyst_bundle.py`, `web/src/lib/briefingApi.ts` and `briefingApi.test.ts` (new), `web/src/components/BriefingPanel.tsx` (new), `web/src/components/DecisionLog.tsx`, `web/src/lib/whatifApi.ts`, `web/src/App.tsx`, `README.md`, `HANDOFF.md`.
+
+### 2026-11-14 11:40 MT: Gemini replaces Claude on Bedrock (owner request)
+
+- **Decision:**
+  1. **The owner's choice:** the operator briefing and the what-if analyst both call Gemini. The owner asked for the briefing, and chose to move the what-if too, with an API key rather than Vertex AI. This replaces item 9 of the 2026-11-04 entry: there is no Bedrock route, region or probe any more.
+  2. **One file changed its job.** `analyst/llm.py` still exposes `Llm.structured()`, so the workflow, the briefing, the figure verifier, the limits and the handler are untouched. `GeminiLlm` calls the Interactions API through Google's `google-genai` SDK with a JSON-schema response format, the same schemas as before.
+  3. **The key is an SSM SecureString, read at run time.** `/headroom/gemini-api-key`, created by the owner (the deploy script asks for it once). The stack grants only `ssm:GetParameter` on that one parameter. The key is in neither the template nor the function's environment. All Bedrock permissions are gone. Locally, `GEMINI_API_KEY` is used instead.
+  4. **Default model `gemini-4-hydrogen`,** which Google's docs recommend for new projects. `scripts/gemini-probe.sh` tries it first, then `gemini-3.8-flash`, `gemini-3.6-flash` and `gemini-3.5-flash-lite`, and the deploy uses the first that answers.
+  5. **Thinking level `low`** (`headroom:analystEffort`), down from Claude's `medium` effort. Both jobs are short, and each call has 25 s. Not measured: see below.
+  6. **`store=False` on every call,** so Google keeps no copy of a visitor's question for later retrieval. Questions still leave AWS for Google, which is new: the confirmation prompt and the README say so.
+  7. **A missing or unreadable key isn't a crash.** The key is read on the first model call, so it fails like any model failure: the what-if answers 503 "not available" and the briefing falls back to the code-written one.
+  8. **Errors are reported by type and HTTP status only.** Seen live: the Interactions API raises an error family outside `google.genai.errors` (a rejected key is `BadRequestError` with `status_code`), so the client reads the status from either family.
+- **Not verified:**
+  - **No real Gemini answer has been seen.** There was no key in this session. The only live call used a fake key and got Google's HTTP 400 "API key not valid", which shows the request reaches the Interactions endpoint and the SDK accepts its shape, nothing more.
+  - Whether Gemini accepts both schemas (closed objects, nullable types, the evidence enum), whether `max_output_tokens` includes thinking, how a refusal or a safety block is reported (the client treats any status but `completed` as a failure, and never raises `LlmRefused`), latency against the 25 s call limit, and how often drafts pass the verifier. The Haiku measurements in earlier entries don't carry over.
+  - `scripts/gemini-probe.sh` and the new key step in `scripts/cloudshell-deploy.sh` are syntax-checked, not run. The probe's request follows the REST example in Google's docs.
+  - Nothing has been deployed.
+- **Affected component:** `analyst/llm.py`, `analyst/local.py`, `analyst/requirements.txt`, `infra/lib/analyst.ts`, `infra/lib/site-stack.ts`, `scripts/gemini-probe.sh` (was `bedrock-probe.sh`), `scripts/cloudshell-deploy.sh`, `scripts/check_analyst_bundle.py`, `sim/tests/test_analyst.py`, `web/src/components/BriefingPanel.tsx`, `WhatIfPanel.tsx` and `Guide.tsx`, `.claude/launch.json`, `README.md`, `HANDOFF.md`.

@@ -1,4 +1,4 @@
-"""The what-if workflow. Code runs the steps; Claude does only the two language jobs.
+"""The what-if workflow. Code runs the steps; Gemini does only the two language jobs.
 
 1. Understand (model): turn the question into inputs, constrained by a schema.
 2. Validate (code): reject anything unknown or out of range, before the engine.

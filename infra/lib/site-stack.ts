@@ -64,17 +64,16 @@ export class HeadroomSiteStack extends cdk.Stack {
     });
 
     // The what-if analyst. Off with -c headroom:analyst=false, for an account that
-    // blocks Lambda or Bedrock: the rest of the site doesn't depend on it, and the
+    // blocks Lambda or has no Gemini API key: the rest of the site doesn't depend on it, and the
     // panel says it isn't connected.
     const context = (name: string, fallback: string): string =>
       String(this.node.tryGetContext(`headroom:${name}`) ?? fallback);
     if (context('analyst', 'true') !== 'false') {
       const concurrency = context('analystConcurrency', '');
       const analyst = new Analyst(this, 'Analyst', {
-        model: context('analystModel', 'anthropic.claude-opus-5-5'),
-        route: context('analystRoute', 'mantle'),
-        region: context('analystRegion', this.region),
-        effort: context('analystEffort', 'medium'),
+        model: context('analystModel', 'gemini-4-hydrogen'),
+        effort: context('analystEffort', 'low'),
+        keyParameter: context('analystKeyParameter', '/headroom/gemini-api-key'),
         dailyCap: context('analystDailyCap', '100'),
         hourlyPerVisitor: context('analystHourlyPerVisitor', '10'),
         reservedConcurrency: concurrency === '' ? undefined : Number(concurrency),

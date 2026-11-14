@@ -6,8 +6,12 @@
 #   cd ~/headroom && bash scripts/cloudshell-deploy.sh
 #
 # Options:
-#   --no-analyst   Deploy only the static site (no Lambda, DynamoDB or Bedrock).
+#   --no-analyst   Deploy only the static site (no Lambda, DynamoDB or Gemini).
 #   --yes          Skip the confirmation prompt.
+#
+# The analyst and the briefing call Google's Gemini API. The key lives in the SSM
+# SecureString parameter /headroom/gemini-api-key in this region. If it's missing, the
+# script asks for it once and stores it there; create one at https://aistudio.google.com/apikey.
 #
 # It uses the committed scenario files, so it needs no EIA key. Build output goes under
 # /tmp because the 1 GB home directory can't hold it. If CloudShell recycles /tmp, rerun.
@@ -62,17 +66,42 @@ if ! node_ok; then
 fi
 echo "node $(node -v), $(python3 --version), $(df -h "$HOME" | awk 'NR==2 {print $4}') free in home"
 
-# --- Which model can this account call?
+# --- The Gemini API key, and a model it can call.
+KEY_PARAM=/headroom/gemini-api-key
 CONTEXT=(-c "headroom:region=$REGION")
 if [ "$WITH_ANALYST" = 1 ]; then
-  step "Finding a Claude model this account can call"
-  if HEADROOM_PROBE_OUT="$WORK.env" bash scripts/bedrock-probe.sh "$REGION"; then
+  step "Checking the Gemini API key ($KEY_PARAM)"
+  kind="$(aws ssm get-parameter --region "$REGION" --name "$KEY_PARAM" \
+    --query Parameter.Type --output text 2>/dev/null || echo MISSING)"
+  if [ "$kind" = MISSING ] && [ -t 0 ]; then
+    echo "No key stored yet. Paste a Gemini API key to store it as an encrypted SSM parameter,"
+    echo "or press Enter to deploy the static site only. Nothing is shown as you type."
+    read -r -s -p "Gemini API key: " GEMINI_KEY; echo
+    case "$GEMINI_KEY" in
+      "") ;;
+      *[!A-Za-z0-9_.-]*) echo "That doesn't look like an API key (unexpected characters). Not stored." ;;
+      *)
+        # By stdin, so the key isn't on a command line.
+        aws ssm put-parameter --region "$REGION" --cli-input-json file:///dev/stdin >/dev/null <<JSON && kind=SecureString
+{"Name": "$KEY_PARAM", "Type": "SecureString", "Value": "$GEMINI_KEY",
+ "Description": "Gemini API key for the Headroom analyst",
+ "Tags": [{"Key": "Project", "Value": "headroom"}]}
+JSON
+        ;;
+    esac
+    unset GEMINI_KEY
+  fi
+  if [ "$kind" != SecureString ]; then
+    [ "$kind" = MISSING ] || echo "$KEY_PARAM is a $kind parameter; it must be a SecureString."
+    echo "No usable Gemini API key: deploying the static site only."
+    WITH_ANALYST=0
+  elif HEADROOM_PROBE_OUT="$WORK.env" HEADROOM_KEY_PARAMETER="$KEY_PARAM" bash scripts/gemini-probe.sh "$REGION"; then
     # shellcheck disable=SC1090
     . "$WORK.env"
-    CONTEXT+=(-c "headroom:analystModel=$ANALYST_MODEL" -c "headroom:analystRoute=$ANALYST_ROUTE"
-              -c "headroom:analystRegion=$ANALYST_REGION" -c "headroom:analystEffort=${ANALYST_EFFORT:-}")
+    CONTEXT+=(-c "headroom:analystModel=$ANALYST_MODEL" -c "headroom:analystEffort=${ANALYST_EFFORT:-}"
+              -c "headroom:analystKeyParameter=$KEY_PARAM")
   else
-    echo "No Claude model available here: deploying the static site only."
+    echo "The key can't call a Gemini model: deploying the static site only."
     WITH_ANALYST=0
   fi
 fi
@@ -83,7 +112,8 @@ if [ "$ASSUME_YES" = 0 ]; then
   echo
   echo "This creates or updates stack HeadroomSiteStack in account $ACCOUNT ($REGION):"
   echo "  S3 bucket, CloudFront distribution, IAM roles, helper Lambdas"
-  [ "$WITH_ANALYST" = 0 ] || echo "  plus the analyst: Lambda, DynamoDB table, Bedrock access ($ANALYST_MODEL)"
+  [ "$WITH_ANALYST" = 0 ] || echo "  plus the analyst: Lambda, DynamoDB table, read access to $KEY_PARAM"
+  [ "$WITH_ANALYST" = 0 ] || echo "  The analyst sends questions to Google's Gemini API ($ANALYST_MODEL), billed to the key's project."
   read -r -p "Continue? [y/N] " reply
   case "$reply" in y|Y|yes) ;; *) echo "Stopped. Nothing was deployed."; exit 0 ;; esac
 fi

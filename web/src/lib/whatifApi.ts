@@ -26,7 +26,7 @@ export type WhatIfReply =
       scenario: ScenarioName;
       scenario_label: string;
       answer: string;
-      /** model_verified: Claude's text passed the figure check. engine_only: code wrote it. */
+      /** model_verified: Gemini's text passed the figure check. engine_only: code wrote it. */
       answer_source: 'model_verified' | 'engine_only';
       caveat: string;
       inputs: WhatIfRow[];
