@@ -84,12 +84,16 @@ if [ "$WITH_ANALYST" = 1 ]; then
       "") ;;
       *[!A-Za-z0-9_.-]*) echo "That doesn't look like an API key (unexpected characters). Not stored." ;;
       *)
-        # By stdin, so the key isn't on a command line.
-        aws ssm put-parameter --region "$REGION" --cli-input-json file:///dev/stdin >/dev/null <<JSON && kind=SecureString
-{"Name": "$KEY_PARAM", "Type": "SecureString", "Value": "$GEMINI_KEY",
+        # Through a private temp file, so the key isn't on a command line. (AWS CLI v2
+        # reads file:///dev/stdin from a heredoc as empty: "Invalid JSON received".)
+        key_json="$(umask 077 && mktemp)"
+        printf '{"Name": "%s", "Type": "SecureString", "Value": "%s",
  "Description": "Gemini API key for the Headroom analyst",
- "Tags": [{"Key": "Project", "Value": "headroom"}]}
-JSON
+ "Tags": [{"Key": "Project", "Value": "headroom"}]}\n' "$KEY_PARAM" "$GEMINI_KEY" >"$key_json"
+        if aws ssm put-parameter --region "$REGION" --cli-input-json "file://$key_json" >/dev/null; then
+          kind=SecureString
+        fi
+        rm -f "$key_json"
         ;;
     esac
     unset GEMINI_KEY
