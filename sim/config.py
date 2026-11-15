@@ -147,11 +147,13 @@ WHATIF_BOUNDS = {  # ILLUSTRATIVE: wide enough for "what if" questions, narrow e
 
 # --- What-if analyst: limits on the public endpoint (overridable per deploy)
 ANALYST_QUESTION_MAX_CHARS = 400           # ILLUSTRATIVE
-ANALYST_DAILY_QUESTION_CAP = 100           # ILLUSTRATIVE: hard stop on model spend, whole site, per UTC day
+ANALYST_MAX_BODY_BYTES = 4096              # ILLUSTRATIVE: a request body; a 400-character question needs under 2.5 kB
+ANALYST_DAILY_QUESTION_CAP = 100           # ILLUSTRATIVE: questions that reach the model, whole site, per UTC day
 ANALYST_HOURLY_PER_VISITOR = 10            # ILLUSTRATIVE
 ANALYST_ANSWER_MAX_CHARS = 1200            # ILLUSTRATIVE
 ANALYST_BRIEFING_MAX_CHARS = 1800          # ILLUSTRATIVE: headline and every point together
 ANALYST_MAX_TOKENS = 4000                  # ILLUSTRATIVE: per model call, includes any thinking
+ANALYST_MAX_MODEL_CALLS = 3                # ILLUSTRATIVE: per request; what-if uses 1 + up to 2, briefing up to 3
 ANALYST_CALL_TIMEOUT_S = 25                # ILLUSTRATIVE: one model call
 ANALYST_TIME_BUDGET_S = 50                 # ILLUSTRATIVE: whole question; CloudFront gives up at 60 s
 ANALYST_RETRY_MIN_S_LEFT = 15              # ILLUSTRATIVE: skip the rewrite if less time than this remains

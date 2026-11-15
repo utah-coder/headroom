@@ -7,7 +7,13 @@
 #
 # Options:
 #   --no-analyst   Deploy only the static site (no Lambda, DynamoDB or Gemini).
+#   --waf          Also put AWS WAF in front of /api/* (a paid stack in us-east-1; README, "Costs").
+#   --bot-control  With --waf, add AWS's Bot Control rule group (more cost; blocks curl, so the
+#                  smoke test's question is skipped).
 #   --yes          Skip the confirmation prompt.
+#
+# The analyst reserves 5 concurrent executions unless the account's quota can't spare them
+# (it must keep 100 unreserved), in which case it deploys without a reservation and says so.
 #
 # The analyst and the briefing call Google's Gemini API. The key lives in the SSM
 # SecureString parameter /headroom/gemini-api-key in this region. If it's missing, the
@@ -27,9 +33,13 @@ CDK_OUT="$WORK/cdk.out"
 
 WITH_ANALYST=1
 ASSUME_YES=0
+WITH_WAF=0
+BOT_CONTROL=0
 for arg in "$@"; do
   case "$arg" in
     --no-analyst) WITH_ANALYST=0 ;;
+    --waf) WITH_WAF=1 ;;
+    --bot-control) BOT_CONTROL=1 ;;
     --yes) ASSUME_YES=1 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
@@ -114,6 +124,38 @@ if [ "$WITH_ANALYST" = 1 ]; then
 fi
 [ "$WITH_ANALYST" = 1 ] || CONTEXT+=(-c "headroom:analyst=false")
 
+# --- Reserved concurrency: only if the account can spare it (100 must stay unreserved).
+CONCURRENCY=5
+if [ "$WITH_ANALYST" = 1 ]; then
+  unreserved="$(aws lambda get-account-settings --region "$REGION" \
+    --query AccountLimit.UnreservedConcurrentExecutions --output text 2>/dev/null || echo 0)"
+  fn="$(aws cloudformation describe-stacks --stack-name HeadroomSiteStack --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='AnalystFunctionName'].OutputValue" --output text 2>/dev/null || true)"
+  held=0
+  if [ -n "$fn" ] && [ "$fn" != None ]; then
+    held="$(aws lambda get-function-concurrency --region "$REGION" --function-name "$fn" \
+      --query ReservedConcurrentExecutions --output text 2>/dev/null || echo 0)"
+    case "$held" in ''|None|*[!0-9]*) held=0 ;; esac
+  fi
+  case "$unreserved" in ''|None|*[!0-9]*) unreserved=0 ;; esac
+  if [ $((unreserved + held - CONCURRENCY)) -ge 100 ]; then
+    CONTEXT+=(-c "headroom:analystConcurrency=$CONCURRENCY")
+  else
+    echo "This account's Lambda concurrency quota can't spare $CONCURRENCY reserved executions"
+    echo "($unreserved unreserved). Deploying the analyst without a reservation: the daily and hourly"
+    echo "limits still apply, but there is no cap on simultaneous questions. Ask AWS to raise the quota."
+    CONCURRENCY=none
+    CONTEXT+=(-c "headroom:analystConcurrency=none")
+  fi
+fi
+
+if [ "$WITH_WAF" = 1 ]; then
+  CONTEXT+=(-c "headroom:waf=true")
+  [ "$BOT_CONTROL" = 0 ] || CONTEXT+=(-c "headroom:wafBotControl=true")
+elif [ "$BOT_CONTROL" = 1 ]; then
+  echo "--bot-control needs --waf." >&2; exit 2
+fi
+
 # --- Confirm.
 if [ "$ASSUME_YES" = 0 ]; then
   echo
@@ -121,6 +163,9 @@ if [ "$ASSUME_YES" = 0 ]; then
   echo "  S3 bucket, CloudFront distribution, IAM roles, helper Lambdas"
   [ "$WITH_ANALYST" = 0 ] || echo "  plus the analyst: Lambda, DynamoDB table, read access to $KEY_PARAM"
   [ "$WITH_ANALYST" = 0 ] || echo "  The analyst sends questions to Google's Gemini API ($ANALYST_MODEL), billed to the key's project."
+  [ "$WITH_ANALYST" = 0 ] || echo "  Reserved concurrency: $CONCURRENCY"
+  [ "$WITH_WAF" = 0 ] || echo "  plus stack HeadroomEdgeStack in us-east-1: an AWS WAF web ACL for /api/* (paid monthly and per request)"
+  [ "$BOT_CONTROL" = 0 ] || echo "  with AWS WAF Bot Control (extra monthly and per-request charges)"
   read -r -p "Continue? [y/N] " reply
   case "$reply" in y|Y|yes) ;; *) echo "Stopped. Nothing was deployed."; exit 0 ;; esac
 fi
@@ -144,9 +189,19 @@ case "$status" in
   CREATE_COMPLETE|UPDATE_COMPLETE) echo "CDK is already bootstrapped ($status)." ;;
   *) step "Bootstrapping CDK"; npx cdk bootstrap "aws://$ACCOUNT/$REGION" --output "$CDK_OUT" "${CONTEXT[@]}" ;;
 esac
+# A CloudFront web ACL lives in us-east-1, so WAF needs CDK there too.
+if [ "$WITH_WAF" = 1 ] && [ "$REGION" != us-east-1 ]; then
+  status="$(aws cloudformation describe-stacks --stack-name CDKToolkit --region us-east-1 \
+    --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo MISSING)"
+  case "$status" in
+    CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+    *) step "Bootstrapping CDK in us-east-1 (for WAF)"; npx cdk bootstrap "aws://$ACCOUNT/us-east-1" --output "$CDK_OUT" "${CONTEXT[@]}" ;;
+  esac
+fi
 
 # --- Deploy. Press a key now and then: CloudShell can time out when idle. If it does,
-# CloudFormation keeps going; reconnect and rerun this script.
+# CloudFormation keeps going; reconnect and rerun this script. With --waf, CDK deploys
+# HeadroomEdgeStack (us-east-1) first, because the site stack depends on it.
 step "Deploying (up to 30 minutes)"
 npx cdk deploy HeadroomSiteStack --require-approval never --output "$CDK_OUT" "${CONTEXT[@]}"
 cd "$ROOT"
@@ -172,6 +227,15 @@ check "direct S3 is private" "$(code "https://$(out BucketRegionalDomainName)/in
 
 if [ "$WITH_ANALYST" = 1 ]; then
   check "direct function URL is refused" "$(code "$(out AnalystFunctionUrl)")" 403
+  # Refused before the counters or the model, so it costs one cheap Lambda run (or nothing, with WAF).
+  BIG="{\"question\":\"$(head -c 6000 /dev/zero | tr '\0' x)\",\"scenario\":\"peak\"}"
+  BIG_HASH="$(printf '%s' "$BIG" | sha256sum | cut -d' ' -f1)"
+  check "oversized POST is refused" "$(curl -s -o /dev/null -m 20 -w '%{http_code}' -X POST "$SITE_URL/api/whatif" \
+    -H 'content-type: application/json' -H "x-amz-content-sha256: $BIG_HASH" -d "$BIG")" 413
+fi
+if [ "$WITH_ANALYST" = 1 ] && [ "$BOT_CONTROL" = 1 ]; then
+  echo "  skip  POST /api/whatif: Bot Control blocks curl. Ask a question on the site instead."
+elif [ "$WITH_ANALYST" = 1 ]; then
   BODY='{"question":"What if the demand charge doubled?","scenario":"peak"}'
   HASH="$(printf '%s' "$BODY" | sha256sum | cut -d' ' -f1)"
   API_CODE="$(curl -s -o /tmp/whatif.json -m 70 -w '%{http_code}' -X POST "$SITE_URL/api/whatif" \

@@ -1,5 +1,5 @@
 import type { ScenarioName } from '../types';
-import { NOT_CONNECTED, sha256Hex } from './whatifApi';
+import { NOT_CONNECTED, sha256Hex, type ResultProvenance } from './whatifApi';
 
 // The operator briefing's API. Like the what-if analyst, it's a request the page makes
 // only when someone asks, and any failure becomes a message in the panel.
@@ -37,6 +37,8 @@ export type BriefingReply =
       /** model_verified: Gemini's text passed the checks. engine_only: code wrote it. */
       source: 'model_verified' | 'engine_only';
       note: string;
+      notice?: string;
+      provenance?: ResultProvenance;
     }
   | { status: 'rate_limited' | 'unavailable' | 'error'; message: string };
 

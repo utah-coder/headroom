@@ -293,6 +293,9 @@ class Counters:
     def update_item(self, **kwargs):
         self.calls += 1
 
+    def get_item(self, **kwargs):
+        return {}
+
 
 def _event(body, path="/api/briefing", method="POST"):
     return {"requestContext": {"http": {"method": method}}, "rawPath": path, "headers": {},
@@ -347,6 +350,9 @@ def test_the_limits_apply_to_a_new_briefing(monkeypatch, endpoint):
     llm, _ = endpoint
 
     class Full:
+        def get_item(self, **kwargs):
+            return {}
+
         def update_item(self, **kwargs):
             error = RuntimeError("limit")
             error.response = {"Error": {"Code": "ConditionalCheckFailedException"}}

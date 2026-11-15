@@ -1,0 +1,73 @@
+Headroom: proprietary, source-available terms
+
+DRAFT FOR OWNER COMPLETION. Before this file is merged, the owner must replace
+every bracketed field below and should have the terms reviewed by a lawyer.
+
+Copyright (c) 2026 [COPYRIGHT HOLDER: full legal name of the person or entity
+that owns this code, to be completed by the owner]. All rights reserved.
+
+Contact for permissions: [CONTACT: address for permission requests, to be
+completed by the owner]
+
+1. What this covers
+
+   "The Software" means the source code, documentation, scripts, configuration,
+   generated scenario files and other material in this repository that the
+   copyright holder owns, including all earlier versions in its history. It does
+   not include third-party material described in section 4.
+
+2. What you may do
+
+   a. View and read the Software in this repository.
+   b. Use the public demonstration site that the copyright holder hosts.
+   c. Anything GitHub's Terms of Service allow for public repositories, such as
+      viewing and forking the repository within GitHub's own features.
+   d. Anything applicable law allows without a licence, such as fair use or fair
+      dealing.
+
+3. What needs written permission
+
+   No other rights are granted. Without the copyright holder's prior written
+   permission, you may not run, install, modify, adapt, translate, build on,
+   copy (outside section 2), redistribute, publish, self-host, offer as a
+   service, sublicense, sell, or otherwise commercialize the Software or any
+   work based on it.
+
+   Viewing the code does not grant a licence to it. The Software is not open
+   source, and these terms are not an open-source licence.
+
+4. Third-party material
+
+   Material that someone else owns keeps its own terms, which these terms do not
+   change. This includes:
+
+   a. Grid data in data/raw/, retrieved from the U.S. Energy Information
+      Administration (EIA) open data API. Its use is governed by EIA's terms.
+   b. Software dependencies listed in sim/requirements.txt,
+      analyst/requirements.txt, web/package.json and infra/package.json, and in
+      their lock files. Each is governed by its own licence. They are not
+      included in this repository, but builds of the site and the analyst
+      bundle include some of them.
+   c. Published reference figures, such as emission factors and the cited
+      national planning study, credited where they are used.
+
+5. No warranty, and not advice
+
+   THE SOFTWARE AND THE DEMONSTRATION ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
+   ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+   COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+   FROM THE SOFTWARE OR THE DEMONSTRATION, OR FROM ANY USE OF THEIR RESULTS.
+
+   Headroom is a simulation for demonstration and evaluation. It combines
+   historical grid data with simulated workloads, storage and illustrative
+   tariffs. Its results are scenario estimates, not forecasts, engineering
+   specifications, utility quotations or operational instructions. It does not
+   control any real infrastructure.
+
+6. Limits of these terms
+
+   These terms state what permission is and is not granted. They do not
+   technically prevent copying, and they do not withdraw any right that someone
+   already has under GitHub's Terms of Service, applicable law, or a licence
+   the copyright holder granted separately.

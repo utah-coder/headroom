@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { askBriefing, pointEvidence, type BriefingEvidence, type BriefingReply } from '../lib/briefingApi';
 import { ROUTE_COLORS } from '../lib/colors';
 import type { ScenarioName } from '../types';
+import { AboutResult } from './AboutResult';
 
 // The operator briefing. Gemini summarizes the plan and its risks from facts code chose,
 // and every point cites evidence code chose. Each citation opens that decision in the log
@@ -78,6 +79,7 @@ function Result({ reply, onOpenDecision }: { reply: BriefingReply; onOpenDecisio
         </p>
       )}
       <p className="text-sm text-slate-400">{reply.note}</p>
+      <AboutResult notice={reply.notice} provenance={reply.provenance} />
     </div>
   );
 }

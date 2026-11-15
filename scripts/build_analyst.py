@@ -10,6 +10,7 @@ Output: infra/build/analyst, or $HEADROOM_ANALYST_BUNDLE. In CloudShell that is
 under /tmp, because the 1 GB home directory can't hold the bundle and cdk.out.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -46,6 +47,16 @@ def prune(path):
                 os.remove(os.path.join(folder, name))
 
 
+def build_info():
+    """The commit being built, and whether the tree had uncommitted changes. Never fails the build."""
+    def git(*args):
+        return subprocess.check_output(["git"] + list(args), cwd=ROOT, stderr=subprocess.DEVNULL).decode().strip()
+    try:
+        return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": "unknown", "dirty": False}
+
+
 def main():
     out = os.path.abspath(os.environ.get("HEADROOM_ANALYST_BUNDLE", DEFAULT_OUT))
     if out == ROOT or ROOT.startswith(out + os.sep) or out == os.path.dirname(out):
@@ -74,6 +85,9 @@ def main():
     os.makedirs(os.path.join(out, "web", "public", "scenarios"))
     shutil.copy2(os.path.join(ROOT, "web", "public", "scenarios", "stress.json"),
                  os.path.join(out, "web", "public", "scenarios", "stress.json"))
+    # Every reply names the build it came from (analyst/notice.py).
+    with open(os.path.join(out, "analyst", "build.json"), "w") as f:
+        json.dump(build_info(), f)
 
     size = size_mb(out)
     print("==> Bundle: {} ({:.0f} MB unzipped)".format(out, size))

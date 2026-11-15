@@ -230,6 +230,11 @@ def test_the_page_and_the_handler_agree_on_question_length():
 class FakeDynamo:
     def __init__(self):
         self.counts = {}
+        self.off = False
+
+    def get_item(self, **kw):
+        assert kw["ConsistentRead"] is True
+        return {"Item": {"pk": kw["Key"]["pk"], "off": {"BOOL": True}}} if self.off else {}
 
     def update_item(self, **kw):
         key = kw["Key"]["pk"]["S"]
@@ -286,7 +291,7 @@ class TestLimits:
 
 
 def post(body, **extra) -> dict:
-    return {"requestContext": {"http": {"method": "POST"}},
+    return {"requestContext": {"http": {"method": "POST"}}, "rawPath": "/api/whatif",
             "headers": {"CloudFront-Viewer-Address": "203.0.113.9:443"},
             "body": json.dumps(body) if not isinstance(body, str) else body, **extra}
 
@@ -330,7 +335,7 @@ class TestHandler:
         assert lambda_handler._limits.client.counts == {}
 
     def test_only_post(self):
-        status, _, _ = self.send({"requestContext": {"http": {"method": "GET"}}})
+        status, _, _ = self.send({"requestContext": {"http": {"method": "GET"}}, "rawPath": "/api/whatif"})
         assert status == 405
 
     def test_the_cap_stops_the_model_call(self):

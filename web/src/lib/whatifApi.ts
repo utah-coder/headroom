@@ -14,6 +14,17 @@ export interface WhatIfRow {
   direction: 'up' | 'down' | 'unchanged';
 }
 
+/** Where a reply's parts come from (analyst/notice.py). Absent from older backends. */
+export interface ResultProvenance {
+  historical_grid_data: string;
+  simulated: string;
+  illustrative: string;
+  outcome: string;
+  seed?: number;
+  build?: string;
+  model?: string | null;
+}
+
 export interface WhatIfSeries {
   t: string[];
   current_grid_kw: number[];
@@ -32,6 +43,8 @@ export type WhatIfReply =
       inputs: WhatIfRow[];
       figures: WhatIfRow[];
       series: WhatIfSeries;
+      notice?: string;
+      provenance?: ResultProvenance;
     }
   | { status: 'engine_refused'; scenario_label: string; message: string; inputs: WhatIfRow[] }
   | { status: 'out_of_scope' | 'invalid_input' | 'rate_limited' | 'unavailable' | 'error'; message: string };

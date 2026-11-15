@@ -137,3 +137,11 @@ The demo is frozen. Make only fixes, documentation changes and redeploys; add no
 - **Same rule as the what-if:** never add a figure to the prompt or loosen a check to make a draft pass. A meaning the model sees must hold no digits or number words; a test enforces it.
 - **The bundle now carries `web/public/scenarios/stress.json`,** because the briefing quotes it. A rebuilt stress file needs a redeploy to reach the briefing.
 - **The live plan is on a separate local branch, `live-plan`,** committed as it was found and not pushed. It touches some of the same files as this work (`App.tsx`, `DECISIONS.md`, `README.md`, `scripts/check_analyst_bundle.py`), so whichever merges second will need those resolved.
+
+## Update, 2026-11-15: hardening for a public repository
+
+- **Licence:** `LICENSE` is proprietary and source-available, with placeholders the owner must complete. Never describe Headroom as open source. See `DECISIONS.md`, 2026-11-15.
+- **Emergency stop for the analyst:** `bash scripts/analyst-switch.sh off` (or `on`, `status`) in the site's region. The README's "Protecting the public endpoint" lists every layer and what each does and doesn't bound.
+- **Keep the handler's order of checks:** route, switch, size, shape, then the operator's switch and the counters, then the model. A new endpoint must go through `_take_limit` and `CallBudget`.
+- **Keep the SDK's retries off** (`client_options()` in `analyst/llm.py`). A test checks it.
+- **WAF is opt-in** (`--waf`) and lives in `HeadroomEdgeStack` in us-east-1.

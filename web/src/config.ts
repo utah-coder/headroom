@@ -16,3 +16,11 @@ export const WHATIF_MAX_CHARS = 400;
 
 // Public GitHub repository, linked from the Footer (Requirement 22.4).
 export const REPO_URL = 'https://github.com/utah-coder/headroom';
+
+// The responsible-use notice. Must equal analyst/notice.py NOTICE (tested), which every
+// analyst reply also carries. Shown once in the footer and with each AI result.
+export const RESPONSIBLE_USE =
+  'Simulation for demonstration and evaluation. Headroom combines historical grid data with simulated ' +
+  'workloads, storage, and illustrative tariffs. Results are scenario estimates, not forecasts, engineering ' +
+  'specifications, utility quotations, or operational instructions. Independently validate inputs and ' +
+  'outputs before making financial or operational decisions.';

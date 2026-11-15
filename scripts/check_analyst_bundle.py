@@ -54,18 +54,24 @@ class Counters:
     def update_item(self, **kwargs):
         return None
 
+    def get_item(self, **kwargs):  # The operator's switch: not set.
+        return {}
+
 
 lambda_handler.llm_module.from_environment = Model
 lambda_handler._limits = Limits(client=Counters(), table="t", daily_cap=1, hourly_per_visitor=1)
 reply = lambda_handler.handler({
     "requestContext": {"http": {"method": "POST"}},
+    "rawPath": "/api/whatif",
     "headers": {},
     "body": json.dumps({"question": "What if the demand charge doubled?", "scenario": "peak"}),
 }, None)
 body = json.loads(reply["body"])
 if reply["statusCode"] != 200 or body.get("answer_source") != "model_verified":
     sys.exit("Unexpected reply: {}".format(reply["body"][:400]))
-print("Bundle OK: {}".format(body["answer"]))
+if not body.get("notice") or body.get("provenance", {}).get("build", "unknown") == "unknown":
+    sys.exit("The reply has no notice, or the bundle has no build.json.")
+print("Bundle OK ({}): {}".format(body["provenance"]["build"], body["answer"]))
 
 # --- The briefing, which also reads the bundled stress.json.
 Model.replies = [{
