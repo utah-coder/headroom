@@ -405,9 +405,13 @@ class TestNotice:
 
     def test_the_page_shows_the_same_notice(self):
         source = (ROOT / "web" / "src" / "config.ts").read_text("utf-8")
-        match = re.search(r"export const RESPONSIBLE_USE =\s*((?:'[^']*'\s*\+?\s*)+);", source)
-        assert match, "RESPONSIBLE_USE not found in web/src/config.ts"
-        assert "".join(re.findall(r"'([^']*)'", match.group(1))) == notice.NOTICE
+        # Slice out the declaration with plain string search, then join its quoted parts.
+        # (No nested regex quantifiers: CodeQL flags those as exponential backtracking.)
+        head = "export const RESPONSIBLE_USE ="
+        start = source.find(head)
+        assert start >= 0, "RESPONSIBLE_USE not found in web/src/config.ts"
+        declaration = source[start + len(head):source.index(";", start)]
+        assert "".join(re.findall(r"'([^']*)'", declaration)) == notice.NOTICE
 
     def test_the_build_id_is_unknown_outside_a_bundle(self):
         assert notice.build_id() == "unknown" or len(notice.build_id()) >= 7
