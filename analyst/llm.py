@@ -6,6 +6,11 @@ reads it from an SSM SecureString parameter on first use. On your machine, set
 ``GEMINI_API_KEY`` instead.
 
 The model is a deploy setting. ``scripts/gemini-probe.sh`` finds one the key can call.
+
+Every model call here is exactly one HTTP attempt. The SDK's own retries are off
+(by default it makes up to five attempts on 408, 409, 429 and 5xx), because a
+retry is another billable request the workflow can't see. The workflows decide
+whether to call again, and ``CallBudget`` caps how many calls one request makes.
 """
 
 from __future__ import annotations
@@ -17,8 +22,8 @@ from typing import Any, Protocol
 
 from sim.config import ANALYST_CALL_TIMEOUT_S
 
-__all__ = ["LlmError", "LlmRefused", "Llm", "GeminiLlm", "from_environment",
-           "DEFAULT_MODEL", "DEFAULT_KEY_PARAMETER"]
+__all__ = ["LlmError", "LlmRefused", "Llm", "GeminiLlm", "CallBudget", "from_environment",
+           "client_options", "DEFAULT_MODEL", "DEFAULT_KEY_PARAMETER"]
 
 DEFAULT_MODEL = "gemini-4-hydrogen"
 DEFAULT_KEY_PARAMETER = "/headroom/gemini-api-key"
@@ -61,7 +66,7 @@ class GeminiLlm:
         if self._client is None:
             from google import genai
 
-            self._client = genai.Client(api_key=self.api_key or _key())
+            self._client = genai.Client(api_key=self.api_key or _key(), http_options=client_options())
         return self._client
 
     def structured(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
@@ -107,6 +112,34 @@ class GeminiLlm:
         if not isinstance(parsed, dict):
             raise LlmError("The model returned JSON that isn't an object.")
         return parsed
+
+
+def client_options() -> Any:
+    """SDK options: one attempt per call, no hidden retries."""
+    from google.genai import types
+
+    return types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1))
+
+
+@dataclass
+class CallBudget:
+    """An ``Llm`` that refuses calls past a fixed number. One per request.
+
+    The workflows already stop on their own (what-if: one call to understand, at most
+    two to explain; briefing: at most three drafts). This is the backstop if that
+    logic changes: a request can never make more than ``max_calls`` model calls.
+    """
+
+    llm: Any
+    max_calls: int  # The caller passes config.ANALYST_MAX_MODEL_CALLS, read at call time.
+    calls: int = 0
+
+    def structured(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                   timeout_s: float | None = None) -> dict[str, Any]:
+        if self.calls >= self.max_calls:
+            raise LlmError("This request has used all its model calls.")
+        self.calls += 1
+        return self.llm.structured(system, user, schema, max_tokens, timeout_s=timeout_s)
 
 
 def _key() -> str:

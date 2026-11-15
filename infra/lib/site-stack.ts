@@ -26,12 +26,26 @@ class TagRawCfnResources implements cdk.IAspect {
   }
 }
 
+export interface HeadroomSiteStackProps extends cdk.StackProps {
+  /** An AWS WAF web ACL (scope CLOUDFRONT, in us-east-1) to attach, from HeadroomEdgeStack. */
+  readonly webAclArn?: string;
+}
+
+/** Reads `-c headroom:<name>` as a whole number at least `min`. Fails the synth otherwise. */
+function contextInt(value: string, name: string, min: number): number {
+  const n = Number(value);
+  if (value.trim() === '' || !Number.isInteger(n) || n < min) {
+    throw new Error(`headroom:${name} must be a whole number of at least ${min}: ${value}`);
+  }
+  return n;
+}
+
 /**
  * Static hosting for Headroom: a private S3 bucket behind CloudFront (OAC).
  * Requirement 1. No custom domain (Req 1.12 is optional and not configured).
  */
 export class HeadroomSiteStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: HeadroomSiteStackProps = {}) {
     super(scope, id, props);
 
     // Req 1.3: private bucket. Direct object URLs return 403 (Req 1.13).
@@ -54,6 +68,7 @@ export class HeadroomSiteStack extends cdk.Stack {
         responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
       },
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      webAclId: props.webAclArn,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       errorResponses: [403, 404].map((httpStatus) => ({
         httpStatus,
@@ -69,14 +84,18 @@ export class HeadroomSiteStack extends cdk.Stack {
     const context = (name: string, fallback: string): string =>
       String(this.node.tryGetContext(`headroom:${name}`) ?? fallback);
     if (context('analyst', 'true') !== 'false') {
-      const concurrency = context('analystConcurrency', '');
+      const concurrency = context('analystConcurrency', '5');
       const analyst = new Analyst(this, 'Analyst', {
         model: context('analystModel', 'gemini-4-hydrogen'),
         effort: context('analystEffort', 'low'),
         keyParameter: context('analystKeyParameter', '/headroom/gemini-api-key'),
-        dailyCap: context('analystDailyCap', '100'),
-        hourlyPerVisitor: context('analystHourlyPerVisitor', '10'),
-        reservedConcurrency: concurrency === '' ? undefined : Number(concurrency),
+        dailyCap: String(contextInt(context('analystDailyCap', '100'), 'analystDailyCap', 0)),
+        hourlyPerVisitor: String(contextInt(context('analystHourlyPerVisitor', '10'), 'analystHourlyPerVisitor', 0)),
+        // At most this many questions run at once. "none" for an account whose concurrency
+        // quota leaves nothing to reserve; scripts/cloudshell-deploy.sh checks the quota.
+        reservedConcurrency: concurrency === 'none' ? undefined : contextInt(concurrency, 'analystConcurrency', 1),
+        // false: the function refuses every request before any cost; the static site is unaffected.
+        enabled: context('analystEnabled', 'true') !== 'false',
       });
 
       distribution.addBehavior(
@@ -99,6 +118,9 @@ export class HeadroomSiteStack extends cdk.Stack {
 
       // scripts/cloudshell-deploy.sh checks this refuses direct calls.
       new cdk.CfnOutput(this, 'AnalystFunctionUrl', { value: analyst.url.url });
+      // Used by scripts/analyst-switch.sh.
+      new cdk.CfnOutput(this, 'AnalystCountersTable', { value: analyst.countersTable });
+      new cdk.CfnOutput(this, 'AnalystFunctionName', { value: analyst.functionName });
     }
 
     // Req 1.7, 1.8: upload web/dist and invalidate /* on every deploy.

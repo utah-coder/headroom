@@ -6,6 +6,7 @@ import { formatKw } from '../lib/format';
 import { hhmmDenver } from '../lib/time';
 import { askWhatIf, changeText, visibleFigures, type WhatIfReply, type WhatIfRow, type WhatIfSeries } from '../lib/whatifApi';
 import type { ScenarioName } from '../types';
+import { AboutResult } from './AboutResult';
 
 // What-if analyst panel. Gemini turns a question into inputs, the real engine
 // reruns, and code checks that every figure came from the engine. Sending a
@@ -111,6 +112,7 @@ function Result({ reply }: { reply: WhatIfReply }) {
           <GridChart series={reply.series} />
         </div>
         <p className="text-sm text-slate-400">{reply.caveat}</p>
+        <AboutResult notice={reply.notice} provenance={reply.provenance} />
       </div>
     );
   }

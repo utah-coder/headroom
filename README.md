@@ -4,6 +4,10 @@
 
 Where should this kilowatt-hour come from?
 
+> **Simulation for demonstration and evaluation.** Headroom combines historical grid data with simulated workloads, storage, and illustrative tariffs. Results are scenario estimates, not forecasts, engineering specifications, utility quotations, or operational instructions. Independently validate inputs and outputs before making financial or operational decisions.
+>
+> **Not open source.** The source is published so you can read it, and you're welcome to use the demo above. No other permission is granted: running, modifying, redistributing, self-hosting or selling it needs the owner's written permission. See [LICENSE](LICENSE) and [Licence](#licence).
+
 Headroom models a simulated 10 MW AI cluster in PacifiCorp East (EIA code `PACE`). For every flexible training job in every 15-minute slot, it picks one route: run from the grid now, run from on-site storage (battery + flywheel) now, defer to later, or move to another region (`BPAT` or `CISO`). It then shows how much grid capacity the site gives back to the utility during stress hours, plus dollars saved and CO₂ avoided (average intensity, not marginal).
 
 The page's numbers are precomputed in Python from real EIA-930 grid data and a labeled simulated site model, written to static JSON, and served from a private S3 bucket through CloudFront. The page loads its data once. The only network call after that is a question someone sends to the [what-if analyst](#what-if-analyst), and every other panel works without it.
@@ -22,7 +26,9 @@ Ask "what if the demand charge doubled?" and the real scheduler reruns on the ch
 
 So every number a reader sees comes from the engine. The check covers figures, not interpretation: a draft can still describe correct figures poorly, so the panel always shows the engine's table beside the prose.
 
-**Limits:** 100 questions a day across the site and 10 an hour per visitor, enforced in DynamoDB before any model call. If the counters can't be reached, questions are refused.
+**Limits:** 100 questions a day across the site and 10 an hour per visitor, enforced in DynamoDB before any model call. If the counters can't be reached, questions are refused. A briefing counts as one question. See [Protecting the public endpoint](#protecting-the-public-endpoint) for what these limits do and don't bound.
+
+Every reply also carries the notice above and a `provenance` block: the historical data period, which parts are simulated or illustrative, the seed, the build commit and the model. A saved or forwarded reply says what it is. On the page it's under "About this result".
 
 **Adjustable inputs:** demand charge, on-peak and off-peak prices, carbon price, battery and flywheel power and capacity, demand-response cut, the region-move fee and price, and whether jobs may move at all. Ranges are in `WHATIF_BOUNDS` in `sim/config.py`.
 
@@ -192,7 +198,17 @@ Questions typed into the what-if panel are sent to Google, with storage turned o
 
 **Time:** allow up to 30 minutes. CloudShell can time out when idle, so press a key now and then. If it disconnects, CloudFormation keeps going: reconnect and rerun the script.
 
-**To change limits or the model,** pass context to `cdk deploy`: `headroom:analystDailyCap`, `headroom:analystHourlyPerVisitor`, `headroom:analystModel`, `headroom:analystEffort` (the model's thinking level), `headroom:analystKeyParameter`, `headroom:analystConcurrency`.
+**More options:**
+- `--waf` puts AWS WAF in front of `/api/*`, as a second stack in us-east-1. It is paid: see [Costs](#costs).
+- `--bot-control`, with `--waf`, adds AWS's Bot Control rule group. It costs more, and it blocks `curl`, so the smoke test skips its real question.
+
+**To change limits or the model,** pass context to `cdk deploy`: `headroom:analystDailyCap`, `headroom:analystHourlyPerVisitor`, `headroom:analystModel`, `headroom:analystEffort` (the model's thinking level), `headroom:analystKeyParameter`, `headroom:analystConcurrency` (default 5, or `none`), `headroom:analystEnabled` (`false` keeps the analyst switched off across deploys), `headroom:waf`, `headroom:wafRateLimit` (default 30 per 5 minutes per IP), `headroom:wafMaxBodyBytes` (default 4096), `headroom:wafBotControl`.
+
+**To remove WAF but keep the site:** deploy again without `--waf`, which detaches the web ACL, then delete the edge stack:
+
+```bash
+aws cloudformation delete-stack --region us-east-1 --stack-name HeadroomEdgeStack
+```
 
 **To remove it:**
 
@@ -205,3 +221,50 @@ The stack doesn't own the Gemini API key, so delete it separately:
 ```bash
 aws ssm delete-parameter --name /headroom/gemini-api-key
 ```
+
+## Protecting the public endpoint
+
+The analyst is the only part of the site that spends money per request. Its protections, cheapest first:
+
+| Layer | What it does | Where |
+|---|---|---|
+| Origin access | The function URL needs IAM auth, and only this distribution's CloudFront may sign for it. A direct call gets 403. The smoke test checks this. | `infra/lib/site-stack.ts`, `infra/lib/analyst.ts` |
+| AWS WAF (optional, paid) | For `/api/*` only: blocks bodies over 4 kB, more than 30 requests per IP in 5 minutes, and IPs on AWS's reputation list. Bot Control is a further option. The static site is never blocked. | `infra/lib/edge-waf.ts`, `--waf` |
+| Request checks | Only `POST` to `/api/whatif` or `/api/briefing`. Bodies over 4096 bytes get 413 before they are decoded or parsed. Questions over 400 characters get 400. | `analyst/handler.py` |
+| Switches | `analystEnabled=false` refuses everything. `scripts/analyst-switch.sh off` stops new model calls without a deploy. | below |
+| Visitor identity | Only `CloudFront-Viewer-Address`, which CloudFront sets. If it is missing, malformed or repeated, the request joins one shared bucket rather than getting its own allowance. An IPv6 visitor is counted by its /64. `X-Forwarded-For` and similar headers are ignored. | `analyst/limits.py` |
+| Counters | Conditional atomic updates in DynamoDB, checked before the model: 10 an hour per visitor and 100 a day for the site. If DynamoDB can't be read or written, the request is refused. | `analyst/limits.py` |
+| Concurrency | At most 5 requests run at once (reserved concurrency). | `headroom:analystConcurrency` |
+| Model calls | At most 3 per request (what-if: 1 to understand and up to 2 to explain; briefing: up to 3 drafts). Up to 4,000 output tokens each, including thinking. One HTTP attempt per call: the SDK's own retries, up to 5 attempts by default, are off. 25 s per call, 50 s per request, and Lambda stops at 58 s. | `analyst/llm.py`, `sim/config.py` |
+| Errors | Replies never include stack traces, keys or exception text. Logs record status, timing, token counts and error types, never questions or IPs. | `analyst/handler.py` |
+
+**What the limits bound, and what they don't:**
+- **They are request limits, not a spending limit.** The daily cap bounds model work: at most 100 × 3 = 300 model calls a day, each with up to 4,000 output tokens plus its prompt. What that costs depends on the model's price, which the logs let you work out (`input_tokens`, `output_tokens` and `model_calls` per request).
+- **They don't bound AWS charges.** CloudFront, Lambda invocations (refused ones included), DynamoDB reads and writes, CloudWatch Logs and WAF all bill per request, whether or not a question is answered. A flood of refused requests is cheap per request, but not free. WAF and reserved concurrency reduce that, and neither caps it.
+- **A budget alert is not enforcement.** AWS Budgets and Google Cloud billing budgets notify you; they don't stop anything. To enforce a cap on the model side, set a request quota on the Gemini API key's Google Cloud project, or revoke the key.
+
+### Emergency switch
+
+```bash
+AWS_REGION=us-west-2 bash scripts/analyst-switch.sh off      # or: on, status
+```
+
+It writes a control item to the counters table. The Lambda reads it, strongly consistent, before every model call. The static site keeps working, and the panels say the analyst is switched off. A briefing already cached in a warm Lambda can still be served, at no model cost. Blunter options, from the script's header: set the function's reserved concurrency to 0 (this resets on the next deploy), deploy with `-c headroom:analystEnabled=false`, or revoke the Gemini key.
+
+## Costs
+
+Approximate list prices; check current AWS and Google pricing before you rely on them.
+
+| Item | When | Approximate cost |
+|---|---|---|
+| Gemini API | Each question or new briefing | Per token, billed to the key's Google project. Bounded by the request limits above, not by AWS. |
+| Lambda, DynamoDB, CloudWatch Logs | Each `/api/*` request, refused or not | Per request and per GB-second; small at demo traffic. Reserved concurrency itself costs nothing. |
+| CloudFront, S3 | Every page view | Per request and per GB transferred. |
+| AWS WAF (`--waf`) | Always, once deployed | About $5 a month for the web ACL, $1 a month per rule (3 rules), and $0.60 per million requests inspected. |
+| WAF Bot Control (`--bot-control`) | Always, once deployed | About $10 a month more, plus about $1 per million requests it inspects (scoped to `/api/*`). |
+
+WAF and Bot Control are off by default. If you turn them on, check for false positives: a blocked visitor gets the page with the analyst unavailable. WAF's rate rule is approximate and reacts within about a minute, so the DynamoDB counters remain the exact limit.
+
+## Licence
+
+Copyright is held by the repository owner; see [LICENSE](LICENSE). The source is published so it can be read. Using the hosted demo is welcome. Nothing else is granted: running, modifying, redistributing, self-hosting, sublicensing or selling the code needs the owner's written permission. These terms don't technically prevent copying. They also don't remove rights you have under GitHub's Terms of Service, applicable law, or a licence granted separately. Third-party data and dependencies keep their own licences.

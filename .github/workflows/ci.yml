@@ -1,15 +1,27 @@
 # Headroom CI (Requirement 4).
-# Runs on every push to any branch. No AWS credentials, no secrets and no
-# EIA_API_KEY are configured or referenced, and no step deploys, bootstraps or
-# writes to an AWS account (Requirements 4.2, 4.3, 6.11).
+# Runs on every push to any branch and on every pull request, including pull requests
+# from forks. No AWS credentials, no secrets and no EIA_API_KEY are configured or
+# referenced, and no step deploys, bootstraps or writes to an AWS account
+# (Requirements 4.2, 4.3, 6.11). That is what makes running untrusted pull requests
+# safe: the `pull_request` event gives a fork's code a read-only token and no secrets.
+# Never switch it to `pull_request_target`, which runs with this repository's
+# permissions and secrets.
+#
+# The job's check name is "ci"; the default branch's ruleset should require it.
 name: ci
 
 on:
   push:
     branches: ['**']
+  pull_request:
 
 permissions:
   contents: read
+
+# A newer push to the same branch or pull request cancels the older run.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
@@ -17,6 +29,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: setup python
         uses: actions/setup-python@v5

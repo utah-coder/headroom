@@ -1,13 +1,17 @@
 import { useLayoutEffect, useRef } from 'react';
-import { REPO_URL } from '../config';
+import { REPO_URL, RESPONSIBLE_USE } from '../config';
 import type { Scenario } from '../types';
 import '../footer.css';
 
-// Always-visible provenance bar (Requirements 15.8, 22.1–22.5, 22.12).
+// Always-visible provenance bar (Requirements 15.8, 22.1–22.5, 22.12), with the
+// responsible-use notice once for the whole page (DECISIONS.md, 2026-11-15).
 
-/** Exact provenance sentence (Requirement 22.2). */
+/** Which inputs are real and which are not (Requirement 22.2, sharpened 2026-11-15). */
 const PROVENANCE_SENTENCE =
-  'Grid data: EIA-930, PacifiCorp East (real). Site, jobs, storage, tariff: simulated and illustrative.';
+  'Grid data: EIA-930, PacifiCorp East (real, historical: June to September 2026). Site, jobs, storage: simulated. Tariff: illustrative.';
+
+/** The notice's first sentence, set in bold. */
+const [NOTICE_LEAD, ...NOTICE_REST] = RESPONSIBLE_USE.split('. ');
 
 interface FooterProps {
   /** The displayed scenario; its `meta.built_at` is shown (Requirement 22.5). */
@@ -40,6 +44,12 @@ export function Footer({ scenario }: FooterProps) {
       className="fixed inset-x-0 bottom-0 z-10 border-t border-slate-800 bg-slate-900 px-4 py-2 text-xs leading-snug text-slate-300"
     >
       <div className="mx-auto flex max-w-screen-2xl flex-wrap items-baseline gap-x-6 gap-y-1">
+        <p className="min-w-0 basis-full break-words text-slate-100">
+          <strong className="font-semibold">{NOTICE_LEAD}.</strong>{' '}
+          {/* The fixed footer can't take the whole notice on a phone; each AI result repeats it in full. */}
+          <span className="hidden sm:inline">{NOTICE_REST.join('. ')}</span>
+          <span className="sm:hidden">Scenario estimates, not forecasts or operational instructions.</span>
+        </p>
         <p className="min-w-0 break-words text-slate-100">{PROVENANCE_SENTENCE}</p>
         <p className="min-w-0 break-words">
           <span className="font-semibold text-slate-100">National planning context:</span> Duke Nicholas

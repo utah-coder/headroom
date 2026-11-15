@@ -15,3 +15,6 @@ data/processed/
 # Kiro task-runner state
 .kiro/specs/*/.config.kiro
 .kiro/specs/*/tasks.meta.json
+
+# Git bundles made for CloudShell uploads; never commit another.
+*.bundle

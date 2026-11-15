@@ -21,8 +21,14 @@ export interface AnalystProps {
   readonly keyParameter: string;
   readonly dailyCap: string;
   readonly hourlyPerVisitor: string;
-  /** Optional cap on simultaneous runs. New accounts may have too little concurrency to reserve any. */
+  /**
+   * Cap on simultaneous runs, or undefined for none. Reserving takes from the account's
+   * concurrency quota, which must keep at least 100 unreserved; new accounts often have a
+   * quota of 10 and can reserve nothing.
+   */
   readonly reservedConcurrency?: number;
+  /** false: every request is refused before the counters or the model. */
+  readonly enabled: boolean;
 }
 
 /**
@@ -32,6 +38,8 @@ export interface AnalystProps {
  */
 export class Analyst extends Construct {
   readonly url: lambda.FunctionUrl;
+  readonly countersTable: string;
+  readonly functionName: string;
 
   constructor(scope: Construct, id: string, props: AnalystProps) {
     super(scope, id);
@@ -73,10 +81,14 @@ export class Analyst extends Construct {
         ANALYST_DAILY_CAP: props.dailyCap,
         ANALYST_HOURLY_PER_VISITOR: props.hourlyPerVisitor,
         ANALYST_SALT: cdk.Aws.STACK_ID,
+        ANALYST_ENABLED: props.enabled ? 'true' : 'false',
       },
     });
 
-    counters.grant(fn, 'dynamodb:UpdateItem');
+    // UpdateItem for the counters, GetItem for the operator's switch (scripts/analyst-switch.sh).
+    counters.grant(fn, 'dynamodb:UpdateItem', 'dynamodb:GetItem');
+    this.countersTable = counters.tableName;
+    this.functionName = fn.functionName;
 
     // The model is Gemini, called over the public internet with an API key. The only
     // AWS permission that needs is reading the key. The parameter must be encrypted
