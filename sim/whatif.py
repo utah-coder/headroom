@@ -102,9 +102,12 @@ class Knob:
 
 
 KNOBS: tuple[Knob, ...] = (
-    Knob("demand_charge_usd_per_kw", "Demand charge", "DEMAND_CHARGE_PER_KW", None, _usd_rate("kW", 2)),
-    Knob("onpeak_usd_per_kwh", "On-peak energy price", "TARIFF_ONPEAK_PER_KWH", None, _usd_rate("kWh", 3)),
-    Knob("offpeak_usd_per_kwh", "Off-peak energy price", "TARIFF_OFFPEAK_PER_KWH", None, _usd_rate("kWh", 3)),
+    Knob("demand_charge_usd_per_kw", "On-peak demand (power) charge", "DEMAND_CHARGE_PER_KW", None,
+         _usd_rate("kW", 2)),
+    Knob("facilities_charge_usd_per_kw", "Facilities charge on the peak at any hour",
+         "FACILITIES_CHARGE_PER_KW", None, _usd_rate("kW", 2)),
+    Knob("onpeak_usd_per_kwh", "On-peak energy price", "TARIFF_ONPEAK_PER_KWH", None, _usd_rate("kWh", 4)),
+    Knob("offpeak_usd_per_kwh", "Off-peak energy price", "TARIFF_OFFPEAK_PER_KWH", None, _usd_rate("kWh", 4)),
     Knob("carbon_usd_per_t", "Carbon price", "CARBON_SHADOW_USD_PER_T", None, _usd_rate("t", 2)),
     Knob("battery_power_kw", "Battery power", "BATTERY", "power_kw", _kw),
     Knob("battery_capacity_kwh", "Battery capacity", "BATTERY", "capacity_kwh", _kwh),

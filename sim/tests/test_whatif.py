@@ -34,14 +34,15 @@ def test_a_what_if_leaves_the_engine_as_it_found_it(scenario, data):
 
 
 def test_overlay_restores_values_even_when_the_run_fails():
-    original = scheduler.DEMAND_CHARGE_PER_KW
+    power, facilities = site.DEMAND_CHARGE_PER_KW, scheduler.FACILITIES_CHARGE_PER_KW
     with pytest.raises(RuntimeError):
-        with whatif.overlay({"demand_charge_usd_per_kw": 99.0}):
-            assert scheduler.DEMAND_CHARGE_PER_KW == 99.0
-            assert metrics.DEMAND_CHARGE_PER_KW == 99.0
+        with whatif.overlay({"demand_charge_usd_per_kw": 99.0, "facilities_charge_usd_per_kw": 9.0}):
+            assert site.DEMAND_CHARGE_PER_KW == 99.0
+            assert scheduler.FACILITIES_CHARGE_PER_KW == 9.0
+            assert metrics.FACILITIES_CHARGE_PER_KW == 9.0
             raise RuntimeError("boom")
-    assert scheduler.DEMAND_CHARGE_PER_KW == original
-    assert metrics.DEMAND_CHARGE_PER_KW == original
+    assert site.DEMAND_CHARGE_PER_KW == power
+    assert (scheduler.FACILITIES_CHARGE_PER_KW, metrics.FACILITIES_CHARGE_PER_KW) == (facilities, facilities)
 
 
 def test_overlay_reaches_every_module_that_holds_a_name():
@@ -70,6 +71,7 @@ def test_two_fields_of_one_device_combine():
 # One value per knob that the sweep showed moves the result in the peak scenario.
 EFFECTIVE = {
     "demand_charge_usd_per_kw": 36.0,
+    "facilities_charge_usd_per_kw": 20.0,
     "onpeak_usd_per_kwh": 0.2,
     "offpeak_usd_per_kwh": 0.2,
     "carbon_usd_per_t": 200.0,
@@ -173,17 +175,21 @@ class TestCompare:
         assert cmp.facts["current.co2_avoided_t"] == f"{m['co2_avoided_t']:,.1f} t"
 
     def test_bill_matches_the_gate_table(self, data):
-        # DECISIONS.md, cheapest-hour gate table (energy + demand). The site bill here
-        # also counts the fee per moved job, so Headroom's figure is that total plus fees.
+        # Baseline's Schedule 9 bill for the peak window (energy + power + facilities
+        # charges). Headroom's figure also counts the fee per moved job.
         run = whatif.current("peak", data)
         cmp = whatif.compare(run, run)
-        assert cmp.facts["current.baseline_bill_usd"] == "$295,473"
+        assert cmp.facts["current.baseline_bill_usd"] == "$284,461"
         expected = run.values["baseline_bill_usd"] - run.values["usd_saved"]
         assert run.values["headroom_bill_usd"] == pytest.approx(expected, abs=0.01)
 
     def test_a_change_has_a_direction_and_an_unsigned_size(self, data):
         base = whatif.current("peak", data)
-        cmp = whatif.compare(base, whatif.run("peak", {"move_fee_usd": 1000.0}, data))
+        # No demand charges, a flat energy price and a $1,000 fee per move: the moves cost more
+        # than the plan saves, so the what-if figure is negative.
+        flat = {"move_fee_usd": 1000.0, "demand_charge_usd_per_kw": 0.0,
+                "facilities_charge_usd_per_kw": 0.0, "onpeak_usd_per_kwh": config.TARIFF_OFFPEAK_PER_KWH}
+        cmp = whatif.compare(base, whatif.run("peak", flat, data))
         saved = next(f for f in cmp.figures if f.id == "usd_saved")
         assert saved.direction == "down"
         assert not saved.change.startswith("-") and not saved.change.startswith("+")
@@ -192,7 +198,7 @@ class TestCompare:
     def test_the_input_change_is_quotable(self, data):
         base = whatif.current("peak", data)
         cmp = whatif.compare(base, whatif.run("peak", {"demand_charge_usd_per_kw": 36.0}, data))
-        assert cmp.facts["input_current.demand_charge_usd_per_kw"] == "$18.00/kW"
+        assert cmp.facts["input_current.demand_charge_usd_per_kw"] == "$15.54/kW"
         assert cmp.facts["input_whatif.demand_charge_usd_per_kw"] == "$36.00/kW"
 
     def test_refuses_to_compare_across_scenarios(self, data):

@@ -47,11 +47,11 @@ from sim.config import (
     DEADLINE_COMFORT_MIN,
     DEADLINE_RISK_USD_PER_KWH,
     DEFER_TARGET_STEP_SLOTS,
-    DEMAND_CHARGE_PER_KW,
     DR_BATTERY_RAMP_S,
     DR_FLYWHEEL_RESERVE_PCT,
     DR_RESERVE_MARGIN,
     DR_STORAGE_SUPPORT_KW,
+    FACILITIES_CHARGE_PER_KW,
     FLYWHEEL,
     HOME_REGION,
     IT_PEAK_KW,
@@ -67,13 +67,13 @@ from sim.config import (
     SLOT_MINUTES,
     SLOTS_PER_HOUR,
     STORAGE_WEAR_USD_PER_KWH,
-    STRESS_DISCHARGE_KW,
+    STRESS_DISCHARGE_SHARE,
     TARIFF_OFFPEAK_PER_KWH,
     TRAINING_SHARE,
 )
 from sim.grid import GridSlot, stress_flags
 from sim.jobs import TrainingJob, arrival_rate_per_hour
-from sim.site import DrInfeasibleError, StorageSpec, StorageState
+from sim.site import DrInfeasibleError, StorageSpec, StorageState, power_charge_per_kw
 from sim.timeutil import hhmm_denver, iso_z
 
 __all__ = [
@@ -348,7 +348,7 @@ class OptionCost:
     total_usd: float
     energy_usd: float           # electricity price × kWh (site tariff, or the alt-region price)
     carbon_usd: float           # kWh × g/kWh × CARBON_SHADOW_USD_PER_T / 1e6
-    peak_usd: float             # DEMAND_CHARGE_PER_KW × rise in the planned window peak
+    peak_usd: float             # facilities × rise in the window peak + power × rise in the on-peak peak
     deadline_usd: float         # deadline-risk penalty
     storage_usd: float          # STORAGE_NOW's first slot from stored energy, with wear
     fee_usd: float              # MOVE_PENALTY_USD for MOVE_REGION
@@ -766,12 +766,21 @@ def forecast_stress(slots: Sequence[GridSlot], horizon: range) -> list[bool]:
     """Forecast-stress flags for the slots of ``horizon``.
 
     A slot is forecast-stressed when its PACE ``DF`` is in the top
-    ``STRESS_TOP_FRACTION`` of the ``DF`` values within the horizon, with the
-    same inclusive tie rule as ``grid.stress_flags``. Reads only ``DF``
-    (Requirement 11.4); the ``stress`` flag on ``GridSlot`` comes from actual
-    demand and is not used for planning.
+    ``STRESS_TOP_FRACTION`` of the ``DF`` values over a full ``LOOKAHEAD_SLOTS``
+    reference window ending where the horizon ends, with the same inclusive tie
+    rule as ``grid.stress_flags``. The reference reaches back before the
+    horizon once the horizon is cut short by the window end, so the threshold
+    does not rise as the look-ahead shrinks: a slot flagged a day ahead stays
+    flagged (DECISIONS.md, "Storage keeps energy for the whole block"). Reads
+    only ``DF``, which is published a day ahead, including for slots already
+    past (Requirement 11.4); the ``stress`` flag on ``GridSlot`` comes from
+    actual demand and is not used for planning.
     """
-    return stress_flags([slots[k].pace_forecast_mw for k in horizon])
+    ref = range(max(0, horizon.stop - LOOKAHEAD_SLOTS), horizon.stop)
+    if horizon.start < ref.start:
+        ref = range(horizon.start, horizon.stop)
+    flags = stress_flags([slots[k].pace_forecast_mw for k in ref])
+    return flags[horizon.start - ref.start:]
 
 
 def run_slots(start: int, minutes: int, n_slots: int) -> list[tuple[int, int]]:
@@ -797,6 +806,7 @@ class RouteCandidate:
     peak_excess_kw: float           # rise in the planned window peak caused by the run
     target_slot: int | None = None  # DEFER resume slot; MOVE_REGION remote start slot
     region: str | None = None       # MOVE_REGION target Alternate_Region
+    peak_usd: float = 0.0           # demand-charge risk in cost: facilities + on-peak power
 
 
 @dataclass(frozen=True)
@@ -957,6 +967,11 @@ class _HeadroomPlanner:
         self.moves: list[MoveRecord] = []
         self.peak_target = peak_target_kw(inp)
         self.P = self.peak_target
+        # Schedule 9 bills two peaks: facilities on the window's highest draw (P)
+        # and power on the highest draw in on-peak slots (P_on). Both start at P0.
+        self.P_on = self.peak_target
+        self.on_peak = np.array([g.on_peak for g in inp.slots], dtype=bool)
+        self.power_rate = power_charge_per_kw(inp.slots[0].t) if inp.slots else 0.0
         self.dr = frozenset(inp.dr_range)
         self.bat_spec = StorageSpec.from_config("battery", BATTERY)
         self.fly_spec = StorageSpec.from_config("flywheel", FLYWHEEL)
@@ -1045,21 +1060,33 @@ class _HeadroomPlanner:
         """Window peak already planned: ``max(P, planned[k] for k ≥ s)``."""
         return max(self.P, float(np.max(self.planned[self.s:])))
 
+    def planned_on_peak_kw(self) -> float:
+        """On-peak peak already planned: ``max(P_on, planned[k] for on-peak k ≥ s)``."""
+        ahead = self.planned[self.s:][self.on_peak[self.s:]]
+        return max(self.P_on, float(np.max(ahead))) if ahead.size else self.P_on
+
     def price_run(self, kw_fac: float, start: int, minutes: int,
-                  ref_peak: float) -> tuple[float, float]:
-        """``(energy_cost $, peak increase kW)`` of running ``kw_fac`` from ``start``.
+                  ref_peak: float, ref_on_peak: float) -> tuple[float, float, float]:
+        """``(energy_cost $, peak increase kW, demand-charge risk $)`` of running
+        ``kw_fac`` from ``start``.
 
         The increase is measured against ``ref_peak`` (``planned_peak_kw``),
         so it is the rise in the window's planned peak caused by this run
         (glossary, Demand_Charge_Risk). While no reservation exceeds ``P`` this
-        equals the design's ``max(0, max_k(planned[k] + kW_k) − P)``.
+        equals the design's ``max(0, max_k(planned[k] + kW_k) − P)``. The risk
+        prices it as Schedule 9 bills it: the facilities charge on that rise plus
+        the power charge on the rise in the on-peak peak over ``ref_on_peak``
+        (``planned_on_peak_kw``), which is 0 for a run with no on-peak slot.
         """
         a, b, u = self._profile(start, minutes)
         if b <= a:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         energy = kw_fac / _MIN_PER_HOUR * float(np.dot(u, self.eff_cost[a:b]))
-        peak = float(np.max(self.planned[a:b] + kw_fac * u / SLOT_MINUTES))
-        return energy, max(0.0, peak - ref_peak)
+        run = self.planned[a:b] + kw_fac * u / SLOT_MINUTES
+        excess = max(0.0, float(np.max(run)) - ref_peak)
+        on = self.on_peak[a:b]
+        excess_on = max(0.0, float(np.max(run[on])) - ref_on_peak) if on.any() else 0.0
+        return energy, excess, FACILITIES_CHARGE_PER_KW * excess + self.power_rate * excess_on
 
     def reserve(self, kw_fac: float, start: int, minutes: int) -> None:
         a, b, u = self._profile(start, minutes)
@@ -1096,6 +1123,14 @@ class _HeadroomPlanner:
             assert self.cap is not None
             return self.cap + DR_STORAGE_SUPPORT_KW
         return math.inf
+
+    def slot_peak_kw(self) -> float:
+        """The peak the current slot is held to: ``P_on`` in an on-peak slot, else ``P``.
+
+        ``P_on ≤ P`` always, so an on-peak slot never raises either billed peak
+        while it stays under ``P_on``.
+        """
+        return self.P_on if self.on_peak[self.s] else self.P
 
     def dr_ahead(self) -> bool:
         return self.dr_active and self.s < self.dr_start
@@ -1231,6 +1266,49 @@ class _HeadroomPlanner:
     def battery_out(self) -> bool:
         return self.s in self.gap.battery_out_slots
 
+    @property
+    def stress_discharge_kw(self) -> float:
+        """Battery shave in a forecast-stress slot: STRESS_DISCHARGE_SHARE of its power rating."""
+        return STRESS_DISCHARGE_SHARE * self.bat_spec.power_kw
+
+    def block_slots_left(self) -> int:
+        """Slots from ``s`` to the end of the high-value block it is in, 0 outside one.
+
+        A block is a run of slots that are on-peak or forecast-stressed, within
+        the look-ahead. It ends early at the DR start: the DR reserve floor
+        already keeps the event's energy back.
+        """
+        k = 0
+        for t in range(self.s, self.h_end):
+            if t in self.dr or not (self.on_peak[t] or self.is_fstress(t)):
+                break
+            k += 1
+        return k
+
+    def paced_discharge_kw(self, battery_only: bool = False) -> float:
+        """Most storage may give STORAGE_NOW and the stress shave in this slot.
+
+        Inside a high-value block it is the energy above the discharge floors
+        spread evenly over the block's remaining slots, so storage lasts the
+        whole block instead of emptying in its first slots and leaving the
+        later ones on the grid. A bigger battery then frees at least as much
+        in every slot of the block. Outside a block it is the full rating- and
+        floor-limited discharge. ``battery_only`` counts the battery alone, for
+        the battery-only stress shave. Peak shave and the DR hold are not paced.
+        """
+        devices = [] if self.battery_out() else [(self.bat_spec, self.bat)]
+        if not battery_only:
+            devices.append((self.fly_spec, self.fly))
+        floors = [(spec, state, self._discharge_floor_kwh(spec)) for spec, state in devices]
+        available = sum(state.max_discharge_kw(spec, _SLOT_HOURS, floor)
+                        for spec, state, floor in floors)
+        k = self.block_slots_left()
+        if k == 0:
+            return available
+        deliverable = sum(max(0.0, state.soc_kwh - self._floor_kwh(spec)) * spec.eta
+                          for spec, state, _ in floors)
+        return min(available, deliverable / (k * _SLOT_HOURS))
+
     def cheap_slot(self) -> bool:
         """The slot's unit cost is within the cheapest CHARGE_RANK_FRACTION of H."""
         costs = self.unit_cost[self.s:self.h_end]
@@ -1250,12 +1328,14 @@ class _HeadroomPlanner:
            ramp. Nothing else runs and nothing charges, so grid = min(load, cap)
            (Requirements 11.15, 14.4). Raises ``DrInfeasibleError`` if ``R``
            exceeds ``dr_storage_limit_kw`` (Requirement 14.11).
-        2. Committed STORAGE_NOW kW, battery first, then flywheel.
-        3. Peak shave: discharge ``load − commit − P`` more, battery first
+        2. Committed STORAGE_NOW kW, battery first, then flywheel (routing
+           offers no more than ``paced_discharge_kw``).
+        3. Peak shave: discharge ``load − commit − slot_peak_kw`` more, battery first
            (Requirement 11.14).
-        4. Forecast-stress slot: up to STRESS_DISCHARGE_KW more from the battery.
+        4. Forecast-stress slot: up to ``stress_discharge_kw`` more from the battery,
+           within what ``paced_discharge_kw`` leaves after steps 2 and 3.
         5. Charge only if nothing discharged, outside DR and forecast stress,
-           in a cheap slot, with ``grid + charge ≤ P``: the battery up to 95 %,
+           in a cheap slot, with ``grid + charge ≤ slot_peak_kw``: the battery up to 95 %,
            then the flywheel up to its initial SOC (Requirement 11.13).
 
         Discharge floors are the DR reserve while the event is ahead and 10 %
@@ -1306,14 +1386,15 @@ class _HeadroomPlanner:
             if take(commit_kw) < commit_kw - _KW_TOL:
                 raise self._fail(f"STORAGE_NOW needs {commit_kw} kW, storage gave "
                                  f"{bat_d + fly_d} kW")
-            excess = load_kw - commit_kw - self.P
+            excess = load_kw - commit_kw - self.slot_peak_kw()
             if excess > 0:
                 peak_kw = take(excess)
             if self.fstress[0]:
                 room = max(0.0, load_kw - bat_d - fly_d)     # grid draw stays ≥ 0
-                stress_kw = take(min(STRESS_DISCHARGE_KW, room), battery_only=True)
+                paced = max(0.0, self.paced_discharge_kw(battery_only=True) - bat_d)
+                stress_kw = take(min(self.stress_discharge_kw, room, paced), battery_only=True)
             if bat_d == 0.0 and fly_d == 0.0 and s not in self.dr and not self.fstress[0]:
-                room = self.P - load_kw
+                room = self.slot_peak_kw() - load_kw
                 if cheap and room > 0:
                     bat_c = 0.0 if self.battery_out() else min(self.bat.max_charge_kw(self.bat_spec, h), room)
                     fly_ceil = self.fly_spec.initial_state().soc_kwh
@@ -1356,7 +1437,8 @@ class _HeadroomPlanner:
 
     # --- candidates (design, "Candidate filtering")
 
-    def defer_options(self, js: JobState, kw_fac: float, ref_peak: float) -> list[RouteCandidate]:
+    def defer_options(self, js: JobState, kw_fac: float, ref_peak: float,
+                      ref_on_peak: float) -> list[RouteCandidate]:
         s = self.s
         rem = js.remaining_min + (RESTART_PENALTY_MIN if js.started else 0)
         restart_kwh = kw_fac * RESTART_PENALTY_MIN / _MIN_PER_HOUR if js.started else 0.0
@@ -1366,11 +1448,11 @@ class _HeadroomPlanner:
                 break
             if t in self.dr or self.is_fstress(t):
                 continue
-            energy, excess = self.price_run(kw_fac, t, rem, ref_peak)
+            energy, excess, peak_usd = self.price_run(kw_fac, t, rem, ref_peak, ref_on_peak)
             finish = t * SLOT_MINUTES + rem
-            cost = (energy + DEMAND_CHARGE_PER_KW * excess
+            cost = (energy + peak_usd
                     + restart_kwh * self.unit_cost[t] + self.deadline_pen(js, finish))
-            out.append(RouteCandidate(DEFER, cost, finish, excess, target_slot=t))
+            out.append(RouteCandidate(DEFER, cost, finish, excess, target_slot=t, peak_usd=peak_usd))
         return out
 
     def price_routes(self, js: JobState, load_kw: float, commit_kw: float
@@ -1388,10 +1470,11 @@ class _HeadroomPlanner:
         now_finish = s * SLOT_MINUTES + rem_now
         pen_now = self.deadline_pen(js, now_finish)
         ref_peak = self.planned_peak_kw()
+        ref_on = self.planned_on_peak_kw()
 
-        energy, excess = self.price_run(kw_fac, s, rem_now, ref_peak)
-        grid = RouteCandidate(GRID_NOW, energy + DEMAND_CHARGE_PER_KW * excess + pen_now,
-                              now_finish, excess)
+        energy, excess, peak_usd = self.price_run(kw_fac, s, rem_now, ref_peak, ref_on)
+        grid = RouteCandidate(GRID_NOW, energy + peak_usd + pen_now,
+                              now_finish, excess, peak_usd=peak_usd)
         offered: list[RouteCandidate] = []
         if load_kw + kw_fac <= self._grid_budget_kw():
             offered.append(grid)
@@ -1401,17 +1484,17 @@ class _HeadroomPlanner:
         # (Requirement 11.9), not finishing after plan_deadline. Its finish
         # equals GRID_NOW's, so a job that cannot finish in the window even
         # running now stays on GRID_NOW every slot, like baseline (DECISIONS.md).
-        storage_left = self.available_discharge_kw() - commit_kw
+        storage_left = self.paced_discharge_kw() - commit_kw
         if s not in self.dr and now_finish <= js.plan_deadline and storage_left >= kw_fac:
             u_s = slot_minutes_used(rem_now)
             first = (kw_fac * u_s / _MIN_PER_HOUR
                      * (self.storage_cost_basis / self.bat_spec.eta + STORAGE_WEAR_USD_PER_KWH))
-            energy, excess = self.price_run(kw_fac, s + 1, rem_now - u_s, ref_peak)
+            energy, excess, peak_usd = self.price_run(kw_fac, s + 1, rem_now - u_s, ref_peak, ref_on)
             offered.append(RouteCandidate(
-                STORAGE_NOW, first + energy + DEMAND_CHARGE_PER_KW * excess + pen_now,
-                now_finish, excess))
+                STORAGE_NOW, first + energy + peak_usd + pen_now,
+                now_finish, excess, peak_usd=peak_usd))
 
-        options = self.defer_options(js, kw_fac, ref_peak)
+        options = self.defer_options(js, kw_fac, ref_peak, ref_on)
         if options:   # best target: lowest cost, earliest on ties
             offered.append(min(options, key=lambda c: (round(c.cost, _COST_DIGITS),
                                                        c.target_slot)))
@@ -1475,7 +1558,7 @@ class _HeadroomPlanner:
             fee = MOVE_PENALTY_USD
         else:
             raise ValueError(f"unknown route {c.route}")
-        peak = DEMAND_CHARGE_PER_KW * c.peak_excess_kw
+        peak = c.peak_usd
         deadline = self.deadline_pen(js, c.finish_min)
         total = energy + carbon + peak + deadline + storage + fee
         if abs(total - c.cost) > _SPLIT_TOL_USD:
@@ -1639,6 +1722,8 @@ def run_headroom(inp: ScenarioInputs, *, trace: bool = False,
             if grid_kw <= inp.cap_kw + _KW_TOL:
                 grid_kw = min(grid_kw, inp.cap_kw)   # absorb float noise from load − (load − cap)
         planner.P = max(planner.P, grid_kw)
+        if planner.on_peak[s]:
+            planner.P_on = max(planner.P_on, grid_kw)
         out_slots.append(SlotResult(
             t=slot.t,
             grid_kw=grid_kw,

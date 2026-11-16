@@ -4,7 +4,7 @@
 
 Where should this kilowatt-hour come from?
 
-> **Simulation for demonstration and evaluation.** Headroom combines historical grid data with simulated workloads, storage, and illustrative tariffs. Results are scenario estimates, not forecasts, engineering specifications, utility quotations, or operational instructions. Independently validate inputs and outputs before making financial or operational decisions.
+> **Simulation for demonstration and evaluation.** Headroom combines historical grid data with simulated workloads and storage and a published utility tariff. Results are scenario estimates, not forecasts, engineering specifications, utility quotations, or operational instructions. Independently validate inputs and outputs before making financial or operational decisions.
 >
 > **Not open source.** The source is published so you can read it, and you're welcome to use the demo above. No other permission is granted: running, modifying, redistributing, self-hosting or selling it needs the owner's written permission. See [LICENSE](LICENSE) and [Licence](#licence).
 
@@ -30,7 +30,7 @@ So every number a reader sees comes from the engine. The check covers figures, n
 
 Every reply also carries the notice above and a `provenance` block: the historical data period, which parts are simulated or illustrative, the seed, the build commit and the model. A saved or forwarded reply says what it is. On the page it's under "About this result".
 
-**Adjustable inputs:** demand charge, on-peak and off-peak prices, carbon price, battery and flywheel power and capacity, demand-response cut, the region-move fee and price, and whether jobs may move at all. Ranges are in `WHATIF_BOUNDS` in `sim/config.py`.
+**Adjustable inputs:** on-peak demand (power) charge, facilities charge, on-peak and off-peak energy prices, carbon price, battery and flywheel power and capacity, demand-response cut, the region-move fee and price, and whether jobs may move at all. Ranges are in `WHATIF_BOUNDS` in `sim/config.py`.
 
 Run it locally against the real Gemini API (each question costs a little). Create a key at https://aistudio.google.com/apikey first:
 
@@ -94,7 +94,7 @@ python -m sim.stress --check
 | Training_Jobs | SIMULATED | Seeded synthetic power profiles from `sim/jobs.py` (power, duration, arrival, deadline). No ML training runs. |
 | Battery and Flywheel | SIMULATED | Battery 4 MW / 16 MWh, 90% round-trip; flywheel 2 MW / 0.5 MWh, 85% round-trip. |
 | Idle_Capacity (spare GPU capacity in BPAT and CISO) | SIMULATED | 0% to 30% per region per hour; a move fails when there is no capacity. |
-| Tariff | ILLUSTRATIVE | $0.045/kWh off-peak, $0.085/kWh on-peak (weekdays 15:00 to 20:00 America/Denver), $18/kW demand charge on the peak 15-minute draw. Not Rocky Mountain Power's actual rates. |
+| Tariff | REAL | Rocky Mountain Power, Utah Electric Service Schedule No. 9 (General Service – High Voltage, 46 kV and above), P.S.C.U. No. 52: Sheets 9.1–9.2 effective 2026-08-10 (Docket 26-035-T08), time periods Sheet 9.3. June–September: energy 5.5841¢/kWh on-peak and 2.8383¢/kWh off-peak; power charge $15.54/kW on the highest on-peak 15-minute draw; facilities charge $2.47/kW on the highest 15-minute draw at any time. On-peak is 15:00 to 22:00 America/Denver, Monday–Friday except the eight Schedule 9 holidays (October–May rates and hours are in `sim/config.py`). Not modelled, because neither policy changes them: the $399/month customer charge, the Schedule 80 riders and the power-factor adjustment. The 48-hour window's peaks stand in for the month's. The carbon shadow price ($50/t) stays ILLUSTRATIVE. |
 
 Note 1: IPCC AR5 publishes no median for the EIA `OIL` and `OTH` codes, so the table uses Oil 650 and Other 300 gCO₂eq/kWh as assumptions. These two values are labeled ILLUSTRATIVE in `sim/config.py`, and like every other factor they feed average intensity, not marginal.
 

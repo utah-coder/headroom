@@ -30,12 +30,13 @@ _BUILT_AT = "2026-10-28T00:00:00Z"
 _SPLIT_TOL_USD = 1e-6
 _COST_DIGITS = 9   # scheduler._route_key compares costs rounded to 1e-9 $
 
-# sha256 of each Scenario_File as built at b84a621 (before decisions[].options),
-# without meta.built_at, restricted to the keys below. A change here means the
-# decision path or another output moved; log it in DECISIONS.md before updating.
+# sha256 of each Scenario_File, without meta.built_at, restricted to the keys
+# below. First taken at b84a621 (before decisions[].options); updated 2026-11-15
+# for the Schedule 9 tariff and storage pacing (DECISIONS.md). A change here means
+# the decision path or another output moved; log it in DECISIONS.md before updating.
 _PRE_FEATURE_SHA256 = {
-    "peak": "59ebd1dc947225c831051ea9b60474c2bb405b464c2635292cfb11b56ab3ddb2",
-    "sun": "202ef9ae18fd1d908f3b6153bdef210c6619d5805c2b6f2214a0df5dd51afa5b",
+    "peak": "bf1141ae60e5e8b2e3960175e79e46e965c3f9b3bc5bdbc0b18a5cbe1c498600",
+    "sun": "57b014965a6f27b84e201a66959576d304ef79d0e500162be76a28c834d49d55",
 }
 _PRE_FEATURE_KEYS: dict[str, tuple[str, ...]] = {
     "meta": ("scenario", "window", "seed", "sources", "params"),

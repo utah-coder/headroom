@@ -10,11 +10,13 @@ import { RouteGlossary } from './RouteChip';
 // state as the Mode toggle and the DR button, and the current step follows
 // that state, so the panel stays in sync however the presenter gets there.
 // Figures come from the Scenario where it carries them; the tariff and
-// carbon price match sim/config.py (DEMAND_CHARGE_PER_KW, CARBON_SHADOW_USD_PER_T).
+// carbon price match sim/config.py (DEMAND_CHARGE_PER_KW, FACILITIES_CHARGE_PER_KW,
+// CARBON_SHADOW_USD_PER_T); the tariff is Rocky Mountain Power's Utah Schedule 9, summer rates.
 
 export type GuideStep = 1 | 2 | 3 | 4;
 
-const DEMAND_CHARGE_PER_KW = 18;
+const DEMAND_CHARGE_PER_KW = 15.54;
+const FACILITIES_CHARGE_PER_KW = 2.47;
 const CARBON_SHADOW_USD_PER_T = 50;
 
 const INTRO =
@@ -60,9 +62,10 @@ function plainSteps(metrics: Metrics): { label: string; title: string; text: str
 }
 
 const WHAT_IS_REAL =
-  "The grid data is real: demand, the utility's forecast and the power-plant mix. The data center, its jobs, " +
-  "its batteries and its electricity rates are simulated. There's no real data center behind this, so we " +
-  'built a realistic one and labeled every made-up number.';
+  "The grid data is real: demand, the utility's forecast and the power-plant mix. So are the electricity " +
+  "rates: Rocky Mountain Power's published tariff for large customers. The data center, its jobs and its " +
+  "batteries are simulated. There's no real data center behind this, so we built a realistic one and " +
+  'labeled every made-up number.';
 
 const WHY_IT_MATTERS =
   'Data centers want more power than the grid can easily deliver, but the grid is only stretched for a few ' +
@@ -239,8 +242,9 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
             <h3 className="font-semibold text-slate-100">How a route is chosen</h3>
             <p>
               Every 15 minutes, each waiting training job takes the route with the lowest total cost: the energy
-              price, plus ${DEMAND_CHARGE_PER_KW} for every kW it would add to the site’s monthly peak, plus carbon
-              at ${CARBON_SHADOW_USD_PER_T} a tonne, plus a penalty that grows as its deadline nears.
+              price, plus ${DEMAND_CHARGE_PER_KW} for every kW it would add to the site’s monthly peak between 3 and
+              10 p.m. on weekdays, plus ${FACILITIES_CHARGE_PER_KW} for every kW it would add to its peak at any hour,
+              plus carbon at ${CARBON_SHADOW_USD_PER_T} a tonne, plus a penalty that grows as its deadline nears.
             </p>
             <p>
               The scheduler plans 24 hours ahead from the grid’s own day-ahead forecast. It never sees what actually
@@ -278,7 +282,8 @@ export function Guide({ scenario, mode, dr, onStep, onHide }: Props) {
               carbon intensity in PacifiCorp East, the Pacific Northwest (BPAT) and California (CISO).
             </p>
             <p>
-              The data center, its jobs, the battery and flywheel, and the tariff are simulated and illustrative.
+              The data center, its jobs, and the battery and flywheel are simulated. The tariff is Rocky Mountain
+              Power’s published Utah Schedule 9 for high-voltage service, summer rates.
               Every number on the page is computed ahead of time. The only network call after it loads is a question
               you send to the what-if analyst, whose answer comes from a fresh run of the same engine.
             </p>

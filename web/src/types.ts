@@ -12,7 +12,7 @@ export interface Sources {
   site: 'SIMULATED';
   jobs: 'SIMULATED';
   storage: 'SIMULATED';
-  tariff: 'ILLUSTRATIVE';
+  tariff: 'REAL: Rocky Mountain Power Utah Schedule 9';
 }
 
 export interface Meta {

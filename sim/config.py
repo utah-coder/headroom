@@ -82,13 +82,28 @@ FLYWHEEL = dict(power_kw=2000, capacity_kwh=500, rte=0.85,
                 soc_min_pct=10, soc_max_pct=95, soc_init_pct=90)  # ILLUSTRATIVE
 STORAGE_WEAR_USD_PER_KWH = 0.02            # ILLUSTRATIVE
 CHARGE_RANK_FRACTION = 0.25                # ILLUSTRATIVE: charge only in cheapest/cleanest 25% of look-ahead
-STRESS_DISCHARGE_KW = 2000                 # ILLUSTRATIVE: battery shave in forecast-stress slots
+STRESS_DISCHARGE_SHARE = 0.5               # ILLUSTRATIVE: battery shave in forecast-stress slots, share of battery power (2,000 kW at 4,000 kW)
 
-# --- Tariff (ILLUSTRATIVE, not Rocky Mountain Power's actual rates)
-TARIFF_OFFPEAK_PER_KWH = 0.045             # ILLUSTRATIVE
-TARIFF_ONPEAK_PER_KWH = 0.085              # ILLUSTRATIVE
-ON_PEAK_HOURS_LOCAL = (15, 20)             # ILLUSTRATIVE, weekdays, [start, end)
-DEMAND_CHARGE_PER_KW = 18.0                # ILLUSTRATIVE
+# --- Tariff: Rocky Mountain Power, Utah Electric Service Schedule No. 9, General Service -
+# High Voltage (46 kV or 69 kV and above), P.S.C.U. No. 52. Rates are Sheets 9.1 and 9.2,
+# Second Revision, effective August 10, 2026 (Docket 26-035-T08, compliance with the 2024 GRC
+# order in Docket 24-035-04). Time periods are Sheet 9.3, effective April 25, 2025.
+# Not modelled, because neither policy can change them: the $399/month customer charge, the
+# Schedule 80 riders (91, 92, 94, 97, 98, 193, 198) and the power-factor adjustment.
+TARIFF_SCHEDULE = "Rocky Mountain Power Utah Schedule 9"   # REAL: P.S.C.U. No. 52
+TARIFF_SUMMER_MONTHS = (6, 7, 8, 9)        # REAL: Sch 9 "June through September inclusive"
+TARIFF_ONPEAK_PER_KWH = 0.055841           # REAL: Sch 9 Sheet 9.2, summer on-peak 5.5841 ¢/kWh
+TARIFF_OFFPEAK_PER_KWH = 0.028383          # REAL: Sch 9 Sheet 9.2, summer off-peak 2.8383 ¢/kWh
+TARIFF_WINTER_ONPEAK_PER_KWH = 0.049417    # REAL: Sch 9 Sheet 9.2, Oct-May on-peak 4.9417 ¢/kWh
+TARIFF_WINTER_OFFPEAK_PER_KWH = 0.025118   # REAL: Sch 9 Sheet 9.2, Oct-May off-peak 2.5118 ¢/kWh
+# On-peak hours, America/Denver, Monday-Friday except holidays, [start, end) hour pairs.
+ON_PEAK_HOURS_LOCAL = ((15, 22),)          # REAL: Sch 9 Sheet 9.3, June-Sept 3:00 p.m. to 10:00 p.m.
+WINTER_ON_PEAK_HOURS_LOCAL = ((6, 9), (18, 22))  # REAL: Sch 9 Sheet 9.3, Oct-May 6-9 a.m., 6-10 p.m.
+# Power charge: $/kW on the highest 15-minute draw in on-peak hours.
+DEMAND_CHARGE_PER_KW = 15.54               # REAL: Sch 9 Sheet 9.1, summer on-peak power charge
+WINTER_DEMAND_CHARGE_PER_KW = 13.75        # REAL: Sch 9 Sheet 9.1, Oct-May on-peak power charge
+# Facilities charge: $/kW on the highest 15-minute draw at any time.
+FACILITIES_CHARGE_PER_KW = 2.47            # REAL: Sch 9 Sheet 9.1, facilities charge, all months
 CARBON_SHADOW_USD_PER_T = 50.0             # ILLUSTRATIVE
 
 # --- Scheduler cost knobs
@@ -133,6 +148,7 @@ REPLAY_HISTORY_DAYS = 7                    # ILLUSTRATIVE: data kept back so for
 # A value outside these ranges is rejected before the engine runs.
 WHATIF_BOUNDS = {  # ILLUSTRATIVE: wide enough for "what if" questions, narrow enough to stay physical
     "demand_charge_usd_per_kw": (0.0, 100.0),     # ILLUSTRATIVE
+    "facilities_charge_usd_per_kw": (0.0, 50.0),  # ILLUSTRATIVE
     "onpeak_usd_per_kwh": (0.0, 1.0),             # ILLUSTRATIVE
     "offpeak_usd_per_kwh": (0.0, 1.0),            # ILLUSTRATIVE
     "carbon_usd_per_t": (0.0, 500.0),             # ILLUSTRATIVE

@@ -33,7 +33,7 @@ OUT_OF_SCOPE = (
 # Shown by the panel with every answer. Measured in DECISIONS.md: a 1% change moves the
 # savings by about 1% at most, but larger changes can tip the plan past a threshold.
 CAVEAT = (
-    "One run of a simulated site with an illustrative tariff, replayed on real grid data. "
+    "One run of a simulated site on Rocky Mountain Power's Utah Schedule 9 tariff, replayed on real grid data. "
     "The scheduler is a greedy heuristic, so a larger change can tip its plan and results aren't always "
     "proportional: read this as one result, not a trend. CO2 is average intensity, not marginal."
 )
@@ -83,7 +83,8 @@ def _understand_system() -> str:
         "The inputs you can set:\n" + "\n".join(lines) + "\n\n"
         "Rules:\n"
         "- Set an input only if the question asks to change it, and leave every other input null.\n"
-        "- Work out relative requests from today's value: doubling a $18.00/kW charge means 36.\n"
+        "- Work out relative requests from today's value: doubling a $15.54/kW charge means 31.08.\n"
+        "- 'Demand charge' on its own means the on-peak demand (power) charge.\n"
         "- Report any value the question states, however large or small. Convert units: 100 MW is 100000 kW. "
         "Code checks whether it is allowed.\n"
         "- scenario: 'peak' for the hot peak week, 'sun' for the sunny day, 'unspecified' if the question doesn't say.\n"

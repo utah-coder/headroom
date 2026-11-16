@@ -109,9 +109,9 @@ def test_build_slots_attaches_tariff_and_on_peak():
         assert s.on_peak == is_on_peak(s.t)
     # Monday 2026-06-01 15:00 MDT = 21:00Z is on-peak; 20:45Z (14:45 MDT) is not.
     by_t = {s.t: s for s in grid.slots}
-    assert by_t[START + 21 * H].on_peak and by_t[START + 21 * H].price_per_kwh == 0.085
+    assert by_t[START + 21 * H].on_peak and by_t[START + 21 * H].price_per_kwh == 0.055841
     assert not by_t[START + 20 * H + timedelta(minutes=45)].on_peak
-    assert by_t[START + 20 * H + timedelta(minutes=45)].price_per_kwh == 0.045
+    assert by_t[START + 20 * H + timedelta(minutes=45)].price_per_kwh == 0.028383
 
 
 def test_build_slots_stress_flags_from_demand():
