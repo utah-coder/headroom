@@ -90,12 +90,23 @@ export function BriefingPanel({ scenario, onOpenDecision }: { scenario: Scenario
   const [busy, setBusy] = useState<ScenarioName | null>(null);
   const reply = replies[scenario];
 
+  const briefed = reply?.status === 'briefed';
+
   const onAsk = async () => {
     if (busy !== null) return;
     setBusy(scenario);
     const result = await askBriefing(scenario);
     setReplies((prev) => ({ ...prev, [scenario]: result }));
     setBusy(null);
+  };
+
+  // Clears this scenario's briefing so it can be written again.
+  const onReset = () => {
+    setReplies((prev) => {
+      const next = { ...prev };
+      delete next[scenario];
+      return next;
+    });
   };
 
   return (
@@ -112,23 +123,24 @@ export function BriefingPanel({ scenario, onOpenDecision }: { scenario: Scenario
           stress test, and every point links to the decision or test behind it.
         </p>
       </div>
-      {(reply === undefined || reply.status !== 'briefed') && (
-        <div>
-          <button
-            type="button"
-            onClick={() => void onAsk()}
-            aria-disabled={busy !== null ? 'true' : undefined}
-            className={
-              'rounded-md px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 ' +
-              (busy === null
+      <div>
+        {/* One button that changes role, so focus stays on it after a reset. */}
+        <button
+          type="button"
+          onClick={briefed ? onReset : () => void onAsk()}
+          aria-disabled={!briefed && busy !== null ? 'true' : undefined}
+          className={
+            'rounded-md px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 ' +
+            (briefed
+              ? 'border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100'
+              : busy === null
                 ? 'bg-sky-300 text-slate-950 hover:bg-sky-200'
                 : 'cursor-not-allowed border border-slate-700 bg-slate-800 text-slate-400')
-            }
-          >
-            {busy === scenario ? 'Writing…' : 'Write the briefing'}
-          </button>
-        </div>
-      )}
+          }
+        >
+          {briefed ? 'Reset' : busy === scenario ? 'Writing…' : 'Write the briefing'}
+        </button>
+      </div>
       <div aria-live="polite" className="flex flex-col gap-3">
         {busy === scenario && <p className="text-sm text-slate-300">Reading the plan and the stress test…</p>}
         {busy !== scenario && reply !== undefined && <Result reply={reply} onOpenDecision={onOpenDecision} />}
