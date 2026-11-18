@@ -65,8 +65,12 @@ def main():
         shutil.rmtree(out)
     os.makedirs(out)
 
+    # --no-warn-conflicts: with --target, pip checks the bundle against whatever else is
+    # installed for this interpreter (in CloudShell, AWS's own aws-sam-cli) and prints a
+    # scary "ERROR" about pins the bundle doesn't share. It isn't one: the bundle is
+    # self-contained and nothing outside it is touched.
     command = [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-               "--target", out, "--only-binary=:all:", "--implementation", "cp",
+               "--no-warn-conflicts", "--target", out, "--only-binary=:all:", "--implementation", "cp",
                "--python-version", "3.12", "--abi", "cp312", "--abi", "abi3", "--abi", "none",
                "-r", os.path.join(ROOT, "analyst", "requirements.txt")]
     for platform in PLATFORMS:
