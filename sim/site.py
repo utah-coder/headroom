@@ -1,9 +1,13 @@
 """Site model: tariff, inference profile, storage and idle capacity.
 
-The tariff is ILLUSTRATIVE, not Rocky Mountain Power's actual rates
-(Requirement 10.16). On-peak is Monday through Friday, local hours in
-``ON_PEAK_HOURS_LOCAL`` = [start, end) America/Denver; every other slot pays
-the off-peak rate. Rates and hours come from ``sim.config``.
+The tariff is Rocky Mountain Power's Utah Schedule 9, General Service - High
+Voltage (REAL; rates and sources in ``sim.config``). Billing months June through
+September are summer; October through May are winter. On-peak is Monday through
+Friday, except the holidays on Sheet 9.3, in the season's local hour ranges
+(America/Denver, each [start, end)); every other slot is off-peak. The bill is
+energy at the slot's rate, plus the power charge on the highest on-peak 15-minute
+draw, plus the facilities charge on the highest 15-minute draw at any time
+(``sim.metrics.demand_charge_usd``).
 
 Inference load follows a raised-cosine daily profile peaking at
 ``IT_PEAK_KW * INFERENCE_SHARE`` at ``INFERENCE_PEAK_HOUR_LOCAL`` Denver time,
@@ -24,7 +28,8 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from functools import lru_cache
 
 from sim.config import (
     ALT_REGIONS,
@@ -37,17 +42,26 @@ from sim.config import (
     INFERENCE_PEAK_HOUR_LOCAL,
     INFERENCE_SHARE,
     IT_PEAK_KW,
+    DEMAND_CHARGE_PER_KW,
     ON_PEAK_HOURS_LOCAL,
     ROUND,
     TARIFF_OFFPEAK_PER_KWH,
     TARIFF_ONPEAK_PER_KWH,
+    TARIFF_SUMMER_MONTHS,
+    TARIFF_WINTER_OFFPEAK_PER_KWH,
+    TARIFF_WINTER_ONPEAK_PER_KWH,
+    WINTER_DEMAND_CHARGE_PER_KW,
+    WINTER_ON_PEAK_HOURS_LOCAL,
 )
 from sim.jobs import rng_for
 from sim.timeutil import denver
 
 __all__ = [
+    "is_summer",
+    "is_tariff_holiday",
     "is_on_peak",
     "tariff_per_kwh",
+    "power_charge_per_kw",
     "inference_it_kw",
     "StorageSpec",
     "StorageState",
@@ -67,18 +81,71 @@ _HOURS_PER_DAY = 24
 _EPS = 1e-6
 
 _FRIDAY = 4  # datetime.weekday(): Monday=0 ... Sunday=6
+_SATURDAY, _SUNDAY = 5, 6
+_MONDAY, _THURSDAY = 0, 3
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """The ``n``-th ``weekday`` of a month (``n = -1`` for the last one)."""
+    if n > 0:
+        first = date(year, month, 1)
+        return first + timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+    nxt = date(year + month // 12, month % 12 + 1, 1)
+    last = nxt - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+@lru_cache(maxsize=None)
+def _tariff_holidays(year: int) -> frozenset[date]:
+    """Schedule 9 holidays (Sheet 9.3), with the weekend rule applied.
+
+    New Year's Day, Presidents Day, Memorial Day, Independence Day, Pioneer Day
+    (July 24), Labor Day, Thanksgiving and Christmas. A Saturday holiday moves to
+    the Friday before, a Sunday holiday to the Monday after.
+    """
+    fixed = [date(year, 1, 1), date(year, 7, 4), date(year, 7, 24), date(year, 12, 25)]
+    moved = [d - timedelta(days=1) if d.weekday() == _SATURDAY
+             else d + timedelta(days=1) if d.weekday() == _SUNDAY else d for d in fixed]
+    floating = [
+        _nth_weekday(year, 2, _MONDAY, 3),     # Presidents Day
+        _nth_weekday(year, 5, _MONDAY, -1),    # Memorial Day
+        _nth_weekday(year, 9, _MONDAY, 1),     # Labor Day
+        _nth_weekday(year, 11, _THURSDAY, 4),  # Thanksgiving
+    ]
+    return frozenset(moved + floating)
+
+
+def is_tariff_holiday(t: datetime) -> bool:
+    """True if ``t``'s Denver local date is a Schedule 9 holiday (always off-peak)."""
+    local = denver(t).date()
+    # Jan 1 on a Saturday is observed on Dec 31 of the year before.
+    return local in _tariff_holidays(local.year) or local in _tariff_holidays(local.year + 1)
+
+
+def is_summer(t: datetime) -> bool:
+    """True if ``t`` falls in a summer billing month (June through September, Denver)."""
+    return denver(t).month in TARIFF_SUMMER_MONTHS
 
 
 def is_on_peak(t: datetime) -> bool:
-    """True if the aware instant ``t`` falls in the On_Peak_Period in Denver local time."""
+    """True if the aware instant ``t`` falls in Schedule 9's on-peak hours, Denver local time."""
     local = denver(t)
-    start, end = ON_PEAK_HOURS_LOCAL
-    return local.weekday() <= _FRIDAY and start <= local.hour < end
+    if local.weekday() > _FRIDAY or is_tariff_holiday(t):
+        return False
+    hours = ON_PEAK_HOURS_LOCAL if is_summer(t) else WINTER_ON_PEAK_HOURS_LOCAL
+    return any(start <= local.hour < end for start, end in hours)
 
 
 def tariff_per_kwh(t: datetime) -> float:
     """Energy rate in $/kWh for a slot starting at the aware instant ``t``."""
-    return TARIFF_ONPEAK_PER_KWH if is_on_peak(t) else TARIFF_OFFPEAK_PER_KWH
+    if is_summer(t):
+        return TARIFF_ONPEAK_PER_KWH if is_on_peak(t) else TARIFF_OFFPEAK_PER_KWH
+    return TARIFF_WINTER_ONPEAK_PER_KWH if is_on_peak(t) else TARIFF_WINTER_OFFPEAK_PER_KWH
+
+
+def power_charge_per_kw(t: datetime) -> float:
+    """Schedule 9 on-peak power charge in $/kW for the billing month containing ``t``."""
+    return DEMAND_CHARGE_PER_KW if is_summer(t) else WINTER_DEMAND_CHARGE_PER_KW
 
 
 # --- Inference load (Requirements 10.4, 10.5)

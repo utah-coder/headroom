@@ -21,6 +21,6 @@ export const REPO_URL = 'https://github.com/utah-coder/headroom';
 // analyst reply also carries. Shown once in the footer and with each AI result.
 export const RESPONSIBLE_USE =
   'Simulation for demonstration and evaluation. Headroom combines historical grid data with simulated ' +
-  'workloads, storage, and illustrative tariffs. Results are scenario estimates, not forecasts, engineering ' +
-  'specifications, utility quotations, or operational instructions. Independently validate inputs and ' +
-  'outputs before making financial or operational decisions.';
+  'workloads and storage and a published utility tariff. Results are scenario estimates, not forecasts, ' +
+  'engineering specifications, utility quotations, or operational instructions. Independently validate ' +
+  'inputs and outputs before making financial or operational decisions.';

@@ -69,7 +69,8 @@ from sim.forecast import (
     quantile,
 )
 from sim.jobs import rng_for
-from sim.metrics import policy_cost_usd, policy_emissions_g, site_peak_kw, stress_indices
+from sim.metrics import (demand_charge_usd, policy_cost_usd, policy_emissions_g, site_peak_kw,
+                         stress_indices)
 from sim.run_scenarios import (
     SCENARIOS_DIR,
     GridData,
@@ -195,7 +196,7 @@ def _outcome(inp: ScenarioInputs, base: PolicyResult, head: PolicyResult) -> Out
     baseline_bill = policy_cost_usd(inp, base, include_moves=False)
     return Outcome(
         usd_saved=baseline_bill - bill,
-        demand_charge_saved_usd=config.DEMAND_CHARGE_PER_KW * (site_peak_kw(base) - site_peak_kw(head)),
+        demand_charge_saved_usd=demand_charge_usd(inp, base) - demand_charge_usd(inp, head),
         bill_usd=bill,
         baseline_bill_usd=baseline_bill,
         co2_avoided_t=(policy_emissions_g(inp, base, include_moves=False)

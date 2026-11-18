@@ -18,9 +18,9 @@ __all__ = ["NOTICE", "provenance", "build_id"]
 
 NOTICE = (
     "Simulation for demonstration and evaluation. Headroom combines historical grid data with simulated "
-    "workloads, storage, and illustrative tariffs. Results are scenario estimates, not forecasts, engineering "
-    "specifications, utility quotations, or operational instructions. Independently validate inputs and "
-    "outputs before making financial or operational decisions."
+    "workloads and storage and a published utility tariff. Results are scenario estimates, not forecasts, "
+    "engineering specifications, utility quotations, or operational instructions. Independently validate "
+    "inputs and outputs before making financial or operational decisions."
 )
 
 # Written by scripts/build_analyst.py into the Lambda bundle. Absent in a checkout.
@@ -48,7 +48,8 @@ def provenance(model: str | None) -> dict[str, Any]:
         ),
         "simulated": "The 10 MW site, its training and inference workloads, the battery and flywheel, "
                      "and spare capacity in other regions.",
-        "illustrative": "The tariff, the demand charge and the carbon price. Not any utility's actual rates.",
+        "illustrative": "The carbon price. The tariff is real: Rocky Mountain Power's published Utah Schedule 9 "
+                        "rates (effective August 10, 2026), without its riders or monthly customer charge.",
         "outcome": "Scenario estimates from a greedy scheduling heuristic run on these inputs. "
                    "Not forecasts or real-world predictions. Nothing here controls real infrastructure.",
         "seed": config.SEED,

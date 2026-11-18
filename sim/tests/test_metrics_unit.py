@@ -30,13 +30,15 @@ from sim.timeutil import slot_times
 START = datetime(2026, 7, 15, 20, 0, tzinfo=timezone.utc)
 INFERENCE_IT_KW = 1000.0
 
-# Per slot: (price $/kWh, PACE g/kWh, BPAT g/kWh, CISO g/kWh, stress)
+# Per slot: (price $/kWh, PACE g/kWh, BPAT g/kWh, CISO g/kWh, stress); the 0.085 slots are on-peak.
+# Prices are fixture values; the demand charges are the real Schedule 9 summer rates (July).
 SLOT_SPEC = [
     (0.045, 400.0, 100.0, 200.0, False),
     (0.085, 500.0, 120.0, 220.0, True),
     (0.085, 500.0, 120.0, 220.0, True),
     (0.045, 300.0, 90.0, 180.0, False),
 ]
+ON_PEAK_PRICE = 0.085
 BASE_GRID = [5000.0, 9000.0, 8000.0, 6000.0]
 
 
@@ -54,7 +56,7 @@ def make_inputs() -> ScenarioInputs:
     slots = tuple(
         GridSlot(t=t, pace_demand_mw=5000.0, pace_forecast_mw=5000.0,
                  carbon_g_per_kwh=ci, alt_carbon={"BPAT": bpat, "CISO": ciso},
-                 price_per_kwh=price, on_peak=price == c.TARIFF_ONPEAK_PER_KWH, stress=stress)
+                 price_per_kwh=price, on_peak=price == ON_PEAK_PRICE, stress=stress)
         for t, (price, ci, bpat, ciso, stress) in zip(times, SLOT_SPEC)
     )
     jobs = tuple(TrainingJob(id=str(4001 + k), arrival_slot=0, power_kw=300,
@@ -111,9 +113,11 @@ def test_headroom_better_than_baseline(inp, base):
 
     # Stress slots 1, 2: max(9000, 8000) − max(5000, 5500)
     assert m.headroom_kw == pytest.approx(3500.0)
-    # Base: 0.25 × (225 + 765 + 680 + 270) + 9000 × 18 = 485 + 162000 = 162485
-    # Head: 0.25 × (270 + 425 + 467.5 + 270) + 6000 × 18 + 75 = 108433.125
-    assert m.usd_saved == pytest.approx(54051.875)
+    # Base: 0.25 × (225 + 765 + 680 + 270) + on-peak 9000 × 15.54 + any-time 9000 × 2.47
+    #       = 485 + 139860 + 22230 = 162575
+    # Head: 0.25 × (270 + 425 + 467.5 + 270) + on-peak 5500 × 15.54 + any-time 6000 × 2.47 + 75
+    #       = 358.125 + 85470 + 14820 + 75 = 100723.125
+    assert m.usd_saved == pytest.approx(61851.875)
     # Base: 0.25 × (5000·400 + 9000·500 + 8000·500 + 6000·300) = 3,075,000 g
     # Head: 0.25 × (6000·400 + 5000·500 + 5500·500 + 6000·300) = 2,362,500 g
     #       + moved 250·120 + 250·90 = 52,500 g → 2,415,000 g
@@ -132,8 +136,8 @@ def test_negative_values_reported_unchanged(inp, base):
     m = compute(inp, base, head, make_dr())
 
     assert m.headroom_kw == pytest.approx(-500.0)
-    # Head: 0.25 × (225 + 807.5 + 765 + 270) + 9500 × 18 = 171516.875
-    assert m.usd_saved == pytest.approx(-9031.875)
+    # Head: 0.25 × (225 + 807.5 + 765 + 270) + 9500 × 15.54 + 9500 × 2.47 = 171611.875
+    assert m.usd_saved == pytest.approx(-9036.875)
     # Head: 0.25 × (5000·400 + 9500·500 + 9000·500 + 6000·300) = 3,262,500 g
     assert m.co2_avoided_t == pytest.approx(-0.1875)
     # Raw DR is 100 × (9000 − 9500) / 4000 = −12.5; the reported value clamps to 0

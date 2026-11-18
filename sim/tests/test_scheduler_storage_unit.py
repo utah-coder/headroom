@@ -25,6 +25,7 @@ from sim.timeutil import iso_z
 
 BAT = StorageSpec.from_config("battery", c.BATTERY)
 FLY = StorageSpec.from_config("flywheel", c.FLYWHEEL)
+STRESS_KW = c.STRESS_DISCHARGE_SHARE * BAT.power_kw
 INFERENCE_IT_KW = 2000.0
 INFERENCE_FAC = INFERENCE_IT_KW * c.PUE
 CARBON = 400.0
@@ -173,12 +174,12 @@ def test_stress_shave_is_battery_only_and_at_most_stress_discharge_kw():
     res = run_headroom(inputs([], slots_for(n, high_df=range(4, 8))), trace=True)
     for s in range(n):
         r, d = res.slots[s], dispatch(res, s)
-        assert d.stress_shave_kw <= c.STRESS_DISCHARGE_KW
+        assert d.stress_shave_kw <= STRESS_KW
         if s in range(4, 8):
             assert res.trace.slots[s].fstress[0]
-            assert d.stress_shave_kw == c.STRESS_DISCHARGE_KW
-            assert r.battery.discharge_kw == c.STRESS_DISCHARGE_KW and r.flywheel.discharge_kw == 0.0
-            assert r.grid_kw == pytest.approx(INFERENCE_FAC - c.STRESS_DISCHARGE_KW)
+            assert d.stress_shave_kw == STRESS_KW
+            assert r.battery.discharge_kw == STRESS_KW and r.flywheel.discharge_kw == 0.0
+            assert r.grid_kw == pytest.approx(INFERENCE_FAC - STRESS_KW)
 
 
 # --- Step 5: charging (Req 11.13)
@@ -239,7 +240,7 @@ def test_dr_reserve_floor_holds_until_the_event():
         else:
             assert d.battery_floor_kwh == BAT.soc_min_kwh and d.flywheel_floor_kwh == FLY.soc_min_kwh
     # Twelve 2,000 kW stress shaves would drain the battery to about 20 %; the reserve stops it.
-    assert any(dispatch(res, s).stress_shave_kw < c.STRESS_DISCHARGE_KW for s in range(start))
+    assert any(dispatch(res, s).stress_shave_kw < STRESS_KW for s in range(start))
     assert res.slots[start - 1].battery_soc_pct / 100 * BAT.capacity_kwh == pytest.approx(BAT_RESERVE_KWH)
     assert all(res.slots[s].grid_kw <= inp.cap_kw for s in inp.dr_range)
 
@@ -282,7 +283,7 @@ def test_real_scenario_storage_invariants(real_run):
         for spec, soc in ((BAT, r.battery_soc_pct), (FLY, r.flywheel_soc_pct)):   # Req 10.13
             assert spec.soc_min_pct - TOL <= soc <= spec.soc_max_pct + TOL
         assert r.grid_kw >= 0.0                                    # Req 10.15
-        assert st.dispatch.stress_shave_kw <= c.STRESS_DISCHARGE_KW
+        assert st.dispatch.stress_shave_kw <= STRESS_KW
         if st.dispatch.charge_kw > 0:                              # Req 11.13
             assert st.dispatch.cheap_slot and not st.fstress[0] and s not in inp.dr_range
             assert r.grid_kw <= st.peak_kw + TOL

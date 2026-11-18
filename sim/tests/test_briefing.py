@@ -106,7 +106,7 @@ def test_a_clean_draft_is_shown_with_its_evidence():
     result = briefing.brief("peak", ScriptedLlm(_good()))
     assert result["status"] == "briefed"
     assert result["source"] == "model_verified"
-    assert "{{" not in result["headline"] and "$29,334" in result["headline"]
+    assert "{{" not in result["headline"] and "$23,256" in result["headline"]
     cited = {i for p in result["points"] for i in p["evidence"]}
     assert {e["id"] for e in result["evidence"]} == cited
     assert all(e["label"] and e["kind"] in ("decision", "test") for e in result["evidence"])
@@ -142,7 +142,7 @@ def test_three_bad_drafts_fall_back_to_the_briefing_written_by_code():
     bad = {"headline": "Saves 29 thousand dollars.", "points": _good()["points"]}
     result = briefing.brief("peak", ScriptedLlm(bad, bad, bad))
     assert result["source"] == "engine_only"
-    assert result["headline"].startswith("The plan saves $29,334")
+    assert result["headline"].startswith("The plan saves $23,256")
     assert all("{{" not in p["text"] for p in result["points"])
 
 

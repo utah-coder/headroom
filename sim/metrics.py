@@ -6,8 +6,9 @@
 * ``headroom_kw``: max baseline ``grid_kw`` over Stress_Slots minus max
   Headroom ``grid_kw`` over the same slots (Requirement 15.1).
 * ``usd_saved``: ``cost(base) − cost(head)``, where ``cost`` is grid energy at
-  the slot tariff plus the window peak × demand charge plus, for Headroom only,
-  the transfer penalty per successful move (Requirements 10.17, 15.2).
+  the slot tariff plus the Schedule 9 demand charges (``demand_charge_usd``)
+  plus, for Headroom only, the transfer penalty per successful move
+  (Requirements 10.17, 15.2).
 * ``co2_avoided_t``: ``(em(base) − em(head)) / 1e6``, where ``em`` is grid
   energy × PACE carbon plus, for Headroom only, moved energy × the target
   region's carbon (Requirements 12.6, 15.3).
@@ -43,7 +44,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from sim.config import DEMAND_CHARGE_PER_KW, MOVE_PENALTY_USD, ROUND, SLOT_MINUTES, SLOTS_PER_HOUR
+from sim.config import FACILITIES_CHARGE_PER_KW, MOVE_PENALTY_USD, ROUND, SLOT_MINUTES, SLOTS_PER_HOUR
 from sim.scheduler import (
     MoveRecord,
     PolicyResult,
@@ -52,7 +53,7 @@ from sim.scheduler import (
     naive_starts,
     run_slots,
 )
-from sim.site import ZoomEntry
+from sim.site import ZoomEntry, power_charge_per_kw
 
 __all__ = [
     "METRIC_KEYS",
@@ -63,6 +64,7 @@ __all__ = [
     "stress_indices",
     "slot_hours",
     "policy_cost_usd",
+    "demand_charge_usd",
     "policy_emissions_g",
     "dr_delivered_raw_pct",
     "clamp_pct",
@@ -184,8 +186,24 @@ def _moves_for_metrics(inp: ScenarioInputs, moves: Sequence[MoveRecord]) -> list
     return out
 
 
+def demand_charge_usd(inp: ScenarioInputs, res: PolicyResult) -> float:
+    """Schedule 9 demand charges on the window, standing in for the billing month.
+
+    Power charge × the highest 15-minute draw in an on-peak slot (0 with none),
+    plus facilities charge × the highest 15-minute draw in any slot. The power
+    charge is the rate for the window's first slot; a window never spans a
+    season change.
+    """
+    _check_slots(inp, res)
+    if not res.slots:
+        return 0.0
+    on_peak = [r.grid_kw for r, g in zip(res.slots, inp.slots) if g.on_peak]
+    power = max(on_peak) * power_charge_per_kw(inp.slots[0].t) if on_peak else 0.0
+    return power + max(r.grid_kw for r in res.slots) * FACILITIES_CHARGE_PER_KW
+
+
 def policy_cost_usd(inp: ScenarioInputs, res: PolicyResult, *, include_moves: bool) -> float:
-    """Energy cost + demand charge on the window peak (+ $ per successful move).
+    """Energy cost + Schedule 9 demand charges (+ $ per successful move).
 
     Requirements 10.16, 10.17, 15.2. Only the Headroom policy's cost includes
     the transfer penalty, so callers pass ``include_moves`` explicitly.
@@ -193,7 +211,7 @@ def policy_cost_usd(inp: ScenarioInputs, res: PolicyResult, *, include_moves: bo
     _check_slots(inp, res)
     h = slot_hours()
     energy = sum(r.grid_kw * h * g.price_per_kwh for r, g in zip(res.slots, inp.slots))
-    demand = max(r.grid_kw for r in res.slots) * DEMAND_CHARGE_PER_KW if res.slots else 0.0
+    demand = demand_charge_usd(inp, res)
     moves = MOVE_PENALTY_USD * len(res.moves) if include_moves else 0.0
     return energy + demand + moves
 

@@ -31,9 +31,9 @@ def test_storage_specs():
 
 def test_tariff_dr_and_move():
     # Req 10.16, 10.17, 10.18, 12.2, 14.1
-    assert (c.TARIFF_OFFPEAK_PER_KWH, c.TARIFF_ONPEAK_PER_KWH) == (0.045, 0.085)
-    assert c.ON_PEAK_HOURS_LOCAL == (15, 20)
-    assert c.DEMAND_CHARGE_PER_KW == 18.0
+    assert (c.TARIFF_OFFPEAK_PER_KWH, c.TARIFF_ONPEAK_PER_KWH) == (0.028383, 0.055841)
+    assert c.ON_PEAK_HOURS_LOCAL == ((15, 22),)
+    assert (c.DEMAND_CHARGE_PER_KW, c.FACILITIES_CHARGE_PER_KW) == (15.54, 2.47)
     assert c.CARBON_SHADOW_USD_PER_T == 50.0
     assert (c.DR_SHED_KW, c.DR_DURATION_SLOTS, c.DR_BATTERY_RAMP_S) == (4000, 8, 20)
     assert c.MOVE_PENALTY_USD == 75.0

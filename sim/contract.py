@@ -102,7 +102,7 @@ SOURCES: Mapping[str, str] = MappingProxyType({
     "site": "SIMULATED",
     "jobs": "SIMULATED",
     "storage": "SIMULATED",
-    "tariff": "ILLUSTRATIVE",
+    "tariff": "REAL: Rocky Mountain Power Utah Schedule 9",
 })
 SOURCES_KEYS: tuple[str, ...] = tuple(SOURCES)
 # meta.params is free-form in the contract; build_doc always writes these first.

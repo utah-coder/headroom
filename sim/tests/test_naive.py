@@ -145,12 +145,14 @@ def test_compute_naive_counts_and_cap():
 
 SCENARIOS = ("peak", "sun")
 
-# The brief's gate table (2026-10-28, seed 42, current cache): site window peak,
-# its Denver time, stress-hour peak, cost (energy + demand) and CO2 in t, all
-# rounded as in the brief; and the capped deadline misses.
+# The brief's gate table (seed 42, current cache): site window peak, its Denver
+# time, stress-hour peak, cost (energy + demand) and CO2 in t, all rounded as in
+# the brief; and the capped deadline misses. Rebuilt 2026-11-15 for Rocky Mountain
+# Power's Schedule 9: the new on-peak hours move some cheapest starts, and the cost
+# now bills the naive peak (off-peak in both) at the facilities charge only.
 GATE = {
-    "peak": dict(site=34_396, at="11:00", stress=4_703, cost=647_087, co2=275.7, missed=(29, 119)),
-    "sun": dict(site=30_907, at="12:30", stress=17_511, cost=579_716, co2=146.4, missed=(20, 99)),
+    "peak": dict(site=34_754, at="10:15", stress=4_703, cost=332_190, co2=275.8, missed=(30, 119)),
+    "sun": dict(site=30_907, at="12:30", stress=17_511, cost=187_658, co2=146.4, missed=(21, 99)),
 }
 
 
@@ -196,4 +198,11 @@ def test_naive_keeps_inference_and_every_deadline(name, builds):
 def test_written_naive_series_matches_the_run(name, builds):
     b = builds[name]
     assert [r["grid_kw"] for r in b.doc["naive"]] == [round(r.grid_kw, 1) for r in b.naive.slots]
-    assert b.doc["naive_metrics"]["usd_saved"] < 0             # it costs more than baseline
+    # Under Schedule 9 a peak outside 3-10 p.m. weekdays pays only the facilities charge.
+    # In peak, cheapest hour still costs more than baseline; in sun (a Friday and a
+    # Saturday) its off-peak pile-up is cheap on the bill and the cost is the grid
+    # connection it would need (test_story_naive_peak_above_baseline_above_headroom).
+    if name == "peak":
+        assert b.doc["naive_metrics"]["usd_saved"] < 0
+    else:
+        assert b.doc["naive_metrics"]["usd_saved"] > b.doc["metrics"]["usd_saved"]

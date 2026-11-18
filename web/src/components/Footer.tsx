@@ -8,7 +8,7 @@ import '../footer.css';
 
 /** Which inputs are real and which are not (Requirement 22.2, sharpened 2026-11-15). */
 const PROVENANCE_SENTENCE =
-  'Grid data: EIA-930, PacifiCorp East (real, historical: June to September 2026). Site, jobs, storage: simulated. Tariff: illustrative.';
+  'Grid data: EIA-930, PacifiCorp East (real, historical: June to September 2026). Site, jobs, storage: simulated. Tariff: Rocky Mountain Power Utah Schedule 9 (real).';
 
 /** The notice's first sentence, set in bold. */
 const [NOTICE_LEAD, ...NOTICE_REST] = RESPONSIBLE_USE.split('. ');
