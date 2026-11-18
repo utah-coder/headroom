@@ -171,6 +171,9 @@ ANALYST_BRIEFING_MAX_CHARS = 1800          # ILLUSTRATIVE: headline and every po
 ANALYST_MAX_TOKENS = 4000                  # ILLUSTRATIVE: per model call, includes any thinking
 ANALYST_MAX_MODEL_CALLS = 3                # ILLUSTRATIVE: per request; what-if uses 1 + up to 2, briefing up to 3
 ANALYST_CALL_TIMEOUT_S = 25                # ILLUSTRATIVE: one model call
+ANALYST_UNDERSTAND_TIMEOUT_S = 35          # ILLUSTRATIVE: the what-if's first call. With no reading of the
+                                           # question there is no answer at all, while a slow explanation
+                                           # still falls back to the engine's. Live Gemini calls ran past 25 s.
 ANALYST_TIME_BUDGET_S = 50                 # ILLUSTRATIVE: whole question; CloudFront gives up at 60 s
 ANALYST_RETRY_MIN_S_LEFT = 15              # ILLUSTRATIVE: skip the rewrite if less time than this remains
 

@@ -151,10 +151,12 @@ def answer(question: str, selected_scenario: str, llm: Llm,
     def time_left() -> float:
         return config.ANALYST_TIME_BUDGET_S - (clock() - started)
 
-    # 1. Understand.
+    # 1. Understand. The longest wait: if this fails there is nothing to show, while
+    # step 4 can fall back to the engine's own answer in whatever time is left.
     try:
         parsed = llm.structured(_understand_system(), f"Question:\n{question}", understand_schema(),
-                                config.ANALYST_MAX_TOKENS)
+                                config.ANALYST_MAX_TOKENS,
+                                timeout_s=min(time_left(), config.ANALYST_UNDERSTAND_TIMEOUT_S))
     except LlmRefused:
         return _payload("out_of_scope", message=OUT_OF_SCOPE)
     if parsed.get("in_scope") is not True:
