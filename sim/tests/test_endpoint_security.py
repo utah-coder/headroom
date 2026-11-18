@@ -381,6 +381,9 @@ class TestModelBounds:
     def test_output_and_time_are_bounded_per_call(self):
         assert 0 < config.ANALYST_MAX_TOKENS <= 8000
         assert config.ANALYST_CALL_TIMEOUT_S < config.ANALYST_TIME_BUDGET_S < 58
+        # The first call waits longest, but still leaves the explanation room to try.
+        assert config.ANALYST_CALL_TIMEOUT_S <= config.ANALYST_UNDERSTAND_TIMEOUT_S
+        assert config.ANALYST_TIME_BUDGET_S - config.ANALYST_UNDERSTAND_TIMEOUT_S >= 10
         lam = (ROOT / "infra" / "lib" / "analyst.ts").read_text("utf-8")
         assert "timeout: cdk.Duration.seconds(58)" in lam
 

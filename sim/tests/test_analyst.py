@@ -197,6 +197,21 @@ class TestWorkflow:
         assert out["answer_source"] == "engine_only"
         assert len(llm.calls) == 2
 
+    def test_understand_waits_longer_than_one_explain_call(self):
+        from sim import config
+
+        llm = ScriptedLlm(understood(), GOOD)
+        answer("q", "peak", llm)
+        assert llm.calls[0]["timeout_s"] == config.ANALYST_UNDERSTAND_TIMEOUT_S
+        assert llm.calls[1]["timeout_s"] <= config.ANALYST_CALL_TIMEOUT_S
+
+    def test_explain_gets_what_a_slow_understand_left(self):
+        ticks = iter([0.0, 0.0, 38.0, 38.0, 38.0, 38.0])
+        llm = ScriptedLlm(understood(), GOOD)
+        out = answer("q", "peak", llm, clock=lambda: next(ticks))
+        assert out["answer_source"] == "model_verified"
+        assert llm.calls[1]["timeout_s"] == 12.0
+
     def test_explain_prompt_lists_only_engine_facts_and_the_hard_rule(self):
         llm = ScriptedLlm(understood(demand_charge_usd_per_kw=36.0), GOOD)
         answer("q", "peak", llm)
